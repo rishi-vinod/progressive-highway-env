@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+.DS_Store
+runs/
+*.zip
+
+# Keep local credentials and private-key files out of commits.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
