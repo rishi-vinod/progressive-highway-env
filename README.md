@@ -1,7 +1,7 @@
 # Progressive highway driving
 
 A local, free, open-source driving simulation built one stage at a time on macOS.
-**Parts 1 and 2 are implemented. Stages 1-5 are planned only.**
+**Stage 0 (Parts 1 and 2) and Stage 1 are implemented. Stages 2-5 are planned only.**
 Parts 1-2 and Stages 1-4 (including 3.5) do **not** learn. Only Stage 5 learns.
 No accounts, API keys, paid services, model downloads, or runtime network calls.
 
@@ -58,7 +58,7 @@ Use only the pygame-ce distribution; the Python import remains `import pygame`.
 Do not install the separate pygame distribution alongside pygame-ce because they
 share the same import namespace and conflict. `requirements.txt` includes only
 pygame-ce for this namespace. The user replaced pygame with pygame-ce in the
-virtual environment; the earlier headless smoke tests predate that replacement.
+virtual environment. Stage 1 uses pygame-ce; no further dependencies are needed.
 
 ## Random driving (Part 2)
 
@@ -110,12 +110,153 @@ Read locally, without web access or library edits:
 - `highway_env/envs/common/graphics.py`: the window close event calls env.close().
 - `farama_notifications/__init__.py`: bundled static notifications, no network fetch.
 
-## Roadmap — build only when requested
+## Stage 1 — stay in lane and keep speed
 
-1. **Stage 1: rule-based baseline.** Stay in lane and keep speed, with expected
-   crashes. Explicitly configure and print observations in real units
-   (normalization off, sufficient vehicles, distance sorting). Add shared metrics
-   and the fixed-seed headless evaluator with this first stage.
+`01_rule_based_drive.py` is a deterministic baseline. It aims for **30 m/s
+(108 km/h)** in its starting lane, with a 0.5 m/s speed tolerance. It uses only
+the ego velocity from the current observation: FASTER below the target band,
+SLOWER above it, and IDLE inside it. IDLE retains the library's lane/speed target;
+it does not stop the car. There are no lane-change commands or traffic avoidance,
+so crashes in traffic are expected. There is no learning.
+
+Run with a window yourself:
+
+```sh
+source .venv/bin/activate
+python 01_rule_based_drive.py --seed 0 --max-steps 40
+```
+
+Run a short headless test:
+
+```sh
+source .venv/bin/activate
+python 01_rule_based_drive.py --headless --seed 0 --max-steps 5
+```
+
+Working means the ego car stays in its starting lane, accelerates from the stock
+25 m/s starting speed toward 30 m/s, and prints action/reward/collision/speed each
+step. It stops at a collision, the 40-second episode limit, or the step limit.
+Window close and Ctrl+C clean up the environment. A completed run writes
+`episode.json` with its seed, environment config, metric definitions, and episode
+metrics under a uniquely named `runs/stage1_.../` directory. A window-closed
+episode is labeled `window_closed`; Ctrl+C does not log an unfinished episode.
+
+The observation configuration is explicit and printed at startup:
+
+```json
+{
+  "type": "Kinematics",
+  "features": ["presence", "x", "y", "vx", "vy"],
+  "vehicles_count": 51,
+  "absolute": true,
+  "normalize": false,
+  "clip": false,
+  "order": "sorted",
+  "see_behind": true,
+  "observe_intentions": false,
+  "include_obstacles": false
+}
+```
+
+Row 0 is ego. All positions are world coordinates in metres; all velocities are
+in m/s. Traffic rows are sorted by absolute longitudinal lane distance, which is
+the installed library's meaning of `order="sorted"` (not Euclidean distance).
+The observation has capacity for ego plus all 50 stock traffic vehicles, but the
+stock perception radius still limits which cars appear. Empty rows have
+`presence=0`. Rear traffic is included and intentions are excluded. The baseline
+ignores all traffic rows; later reactive controllers may use them.
+
+### Shared metrics and fixed-seed evaluation
+
+Run the full 50-episode evaluation (always `render_mode=None`):
+
+```sh
+source .venv/bin/activate
+python evaluate.py
+```
+
+This uses exactly seeds **0 through 49**, a fresh controller/environment per
+episode, 50 stock traffic vehicles, a 40-second horizon, 15 Hz physics, and 1 Hz
+controller decisions. It prints a per-episode table and an aggregate summary.
+Crashes end episodes early; they count as collisions, not evaluation failures.
+Do not change seeds, timing, traffic, or metric definitions when comparing stages.
+
+For a quick check instead of the full benchmark:
+
+```sh
+python evaluate.py --smoke-test --max-steps 3
+```
+
+This runs only seeds 0 and 1 and is explicitly labeled **SMOKE TEST**. A custom
+`--max-steps` can shorten evaluation; step-limited episodes are counted separately
+in the summary. Shortened runs are not comparable to the default benchmark.
+
+Per-episode definitions are shared by the demo and evaluator:
+
+- **Collision:** whether ego's collision flag was ever true during the episode.
+- **Closest distance (m):** minimum Euclidean center-to-center distance between
+  ego and any other car, including the initial state and every physics tick at
+  15 Hz. This is a sampled minimum, not a continuous-time interpolation or bumper
+  gap. All road vehicles count, including those outside the observation radius.
+- **Average speed (m/s):** trapezoidal integration of ego speed at physics ticks,
+  divided by elapsed simulated time. Includes all ticks through the end of the
+  terminating controller step, matching stock episode termination timing.
+
+The summary reports collision count/rate, the minimum closest distance across
+episodes, mean episode closest distance, and mean episode average speed. Each
+episode receives equal weight in those means. Missing nearby cars yield a JSON
+null/CSV blank distance rather than infinity (stock traffic normally prevents it).
+
+Each evaluation creates a new `runs/evaluation_.../` directory containing a JSON
+record for each finished seed, `episodes.csv` (collision yes/no), and
+`summary.json` with the config, requested/completed seeds, metric definitions,
+and completion status. Ctrl+C preserves completed episodes and marks the run
+incomplete. Unique directories and exclusive file creation prevent overwrites.
+These metrics logs are not scenario/replay files.
+
+### Reusing the runner for future authorized controllers
+
+`driving_common.py` holds the environment, fixed seeds, metrics, and episode loop.
+The measurement environment subclasses stock `HighwayEnv` and `Road`, delegating
+physics to the installed library and sampling afterward; no installed files are
+edited. Ground truth is used only for metrics. The baseline gets a copy of the
+observation, never the environment, vehicle objects, `info`, or metrics.
+
+The plugin contract is `create_controller(seed) -> callable(observation) -> int`.
+The seed allows future controllers to initialize local randomness. For example,
+the explicit form of the current benchmark is:
+
+```sh
+python evaluate.py --controller 01_rule_based_drive:create_controller
+```
+
+When another stage is authorized, its local module can expose that same factory
+and use the same evaluator. `run_episode` also accepts an environment factory
+for future scenario environments that preserve the metric hooks. The loader
+imports local Python code; only select trusted project controller modules.
+
+Headless correctness checks (standard-library unittest, no extra packages):
+
+```sh
+python test_stage1.py
+```
+
+The checks cover observation-only decisions, physical units and sorting,
+intermediate-tick distance minima, collision accumulation, time-averaged speed,
+unchanged stock dynamics, repeatability, fixed seeds, and cleanup on controller
+failure. Windowed rendering remains for the user to test.
+
+Stage 1 API verification used installed highway-env 1.12.1 / Gymnasium 1.4.0:
+`KinematicObservation` in `envs/common/observation.py`, sorting and physics in
+`road/road.py`, action mappings in `envs/common/action.py`, discrete speed and
+lane keeping in `vehicle/controller.py`, and reset/step/render/close hooks in
+`envs/common/abstract.py`. These paths are relative to the installed
+`highway_env` package under `.venv/lib/python3.12/site-packages/`.
+
+## Roadmap — later stages only when requested
+
+1. **Stage 1: implemented.** Stay in lane and keep speed, real-unit observations,
+   shared physics-tick metrics, and fixed-seed headless evaluation (see above).
 2. **Stage 2: reactive stock-traffic driving.** Use only current observed positions
    and speeds for gap/time-to-collision braking and lane changes; never inspect
    traffic's internal intentions. Check target lanes ahead and behind.
@@ -140,17 +281,11 @@ Read locally, without web access or library edits:
    separate training and held-out seeds, and comparison to rules using identical
    metrics. Optional learned guardian for Stage 3.5. Only this stage learns.
 
-## Shared evaluation and scenarios — future stage work
+## Scenario saving and replay — future stage work
 
-No Stage 1-5 code, evaluation runner, or scenario/replay implementation is included
-in Parts 1-2. Add these as their stages are authorized.
-
-Every stage will log per episode: collision, minimum center-to-center distance to
-another car across the episode, and average ego speed. Ground-truth vehicle
-positions are allowed for metrics and logs, never as controller inputs. Use the
-same fixed 50 seeds (0 through 49) for the headless evaluation script and print a
-summary table. Define shared sampling and averaging conventions when Stage 1 is
-built, and preserve them for all comparisons.
+Stage 1 implements the shared metrics and evaluation runner described above.
+Stages 2-5 and scenario/replay functionality remain unimplemented. Preserve the
+Stage 1 metric definitions and fixed 50 seeds in future stage comparisons.
 
 JSON scenarios will save environment config, seed, every typed command with both
 wall-clock timestamp and effective simulation step, and per-step position, speed,
@@ -159,6 +294,6 @@ hazard schedule. Replay resets the seed and applies the same commands/events at
 the same steps, then verifies the result against the saved run. Scenario training
 recreates seeds and event schedules; it does not train on per-step log records.
 
-The current script prints to the terminal and keeps library caches under ignored
-`runs/`. Future scenario and metrics output will use local JSON/CSV files there.
+Scripts print to the terminal and keep library caches under ignored `runs/`.
+Stage 1 metrics use local JSON/CSV files there; future scenarios will also stay local.
 No cloud logging, hosting, paid services, or runtime network calls are permitted.
