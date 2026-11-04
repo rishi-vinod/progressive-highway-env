@@ -48,7 +48,8 @@ ENV_CONFIG = {
         "type": "DiscreteMetaAction",
         "longitudinal": True,
         "lateral": True,
-        "target_speeds": [20, 25, 30],
+        # All current comparisons use this range: SLOWER must be able to stop.
+        "target_speeds": [0, 5, 10, 15, 20, 25, 30],
     },
     "vehicles_count": 50,
     "lanes_count": 4,

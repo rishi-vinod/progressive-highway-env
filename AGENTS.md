@@ -37,6 +37,7 @@
 - At the end of each stage, tell me exactly what to run and what "working" should look like, then STOP and wait for me.
 
 ## Scope and future requirements
+- The user subsequently authorized completion of Stages 2-5 together, selected the pygame-only Stage 4 panel, and explicitly approved the separate Stage 5 CPU training dependencies. These choices do not authorize other libraries, network services, commits, or pushes.
 - Parts 1 and 2 only are authorized initially. Build ONE later stage at a time, only when requested, in its own file.
 - Stages 1-4 (including 3.5) do NOT learn. Only Stage 5 learns.
 - Controllers must use only current observations; ground-truth positions may be used for metrics and logging only.

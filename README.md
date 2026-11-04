@@ -1,7 +1,7 @@
 # Progressive highway driving
 
 A local, free, open-source driving simulation built one stage at a time on macOS.
-**Stage 0 (Parts 1 and 2) and Stage 1 are implemented. Stages 2-5 are planned only.**
+**Stages 0-5, including Stage 3.5, are implemented.**
 Parts 1-2 and Stages 1-4 (including 3.5) do **not** learn. Only Stage 5 learns.
 No accounts, API keys, paid services, model downloads, or runtime network calls.
 
@@ -29,12 +29,12 @@ dependencies. Pip itself is listed below but is excluded by ordinary `pip freeze
 Only PyPI is used for installation. The `--no-cache-dir` option avoids writing a
 pip download cache outside the project.
 
-Allowed libraries for the current stage: highway-env, gymnasium, numpy,
+Base libraries for Stages 0-4: highway-env, gymnasium, numpy,
 pygame-ce, and matplotlib (plus their automatically installed dependencies).
 The pinned versions are highway-env 1.12.1, gymnasium 1.4.0, numpy 2.5.4,
 pygame-ce 2.5.8, and matplotlib 3.11.2.
 
-Every other installed distribution (automatic dependencies, plus pip):
+Base-environment dependencies (the complete post-Stage-5 inventory is below):
 
 ```text
 cloudpickle==3.1.2
@@ -58,7 +58,8 @@ Use only the pygame-ce distribution; the Python import remains `import pygame`.
 Do not install the separate pygame distribution alongside pygame-ce because they
 share the same import namespace and conflict. `requirements.txt` includes only
 pygame-ce for this namespace. The user replaced pygame with pygame-ce in the
-virtual environment. Stage 1 uses pygame-ce; no further dependencies are needed.
+virtual environment. Stages 0-4 use these base packages. Stage 5 additionally uses
+the separately approved CPU training dependencies in `requirements-stage5.txt`.
 
 ## Random driving (Part 2)
 
@@ -180,6 +181,9 @@ episode, 50 stock traffic vehicles, a 40-second horizon, 15 Hz physics, and 1 Hz
 controller decisions. It prints a per-episode table and an aggregate summary.
 Crashes end episodes early; they count as collisions, not evaluation failures.
 Do not change seeds, timing, traffic, or metric definitions when comparing stages.
+The full-project action range now includes targets `[0, 5, 10, 15, 20, 25, 30]`
+m/s, so braking can reach zero. Earlier Stage 1 runs used `[20, 25, 30]`; compare
+new runs against the new baseline, not historical results made with that range.
 
 For a quick check instead of the full benchmark:
 
@@ -253,47 +257,367 @@ lane keeping in `vehicle/controller.py`, and reset/step/render/close hooks in
 `envs/common/abstract.py`. These paths are relative to the installed
 `highway_env` package under `.venv/lib/python3.12/site-packages/`.
 
-## Roadmap — later stages only when requested
+## Stage 2 — reactive driving on stock traffic
 
-1. **Stage 1: implemented.** Stay in lane and keep speed, real-unit observations,
-   shared physics-tick metrics, and fixed-seed headless evaluation (see above).
-2. **Stage 2: reactive stock-traffic driving.** Use only current observed positions
-   and speeds for gap/time-to-collision braking and lane changes; never inspect
-   traffic's internal intentions. Check target lanes ahead and behind.
-3. **Stage 3: repeatable forced hazards.** Subclass vehicle classes for hard braking
-   and cut-ins, triggered by simulation time or distance. Stress-test Stage 2.
-4. **Stage 3.5: human driving with hazard takeover.** Keyboard driving and assist
-   ON/OFF, seeded random Stage 3 hazards, named observation-only danger thresholds,
-   Stage 2 rescue with front/rear lane checks (brake if blocked), visible
-   ASSIST ACTIVE notice, and handback after a sustained safe interval. Log human
-   versus assist actions and the hazard schedule. Compare assist OFF/ON on the
-   same 50 seeds using a Stage 1 stand-in driver or recorded keypress replay.
-   Report hazards triggered, collisions, percentage avoided, secondary collisions,
-   closest distance, average speed, and takeover count. Avoidance is not guaranteed.
-5. **Stage 4 — advanced/later: local developer UI.** rgb_array simulation frames
-   beside a rule-based keyword/regex command panel and save-scenario. Before
-   building, explain Gradio's license and dependencies (including huggingface_hub)
-   and ask the user to choose Gradio or pygame-only. If chosen, disable Gradio
-   analytics before import and launch only on 127.0.0.1 with share=False.
-6. **Stage 5 — advanced/later: local CPU reinforcement learning.** Request approval
-   before installing stable-baselines3 and CPU-only PyTorch; keep dependencies in
-   requirements-stage5.txt. Short training with negative collision reward,
-   separate training and held-out seeds, and comparison to rules using identical
-   metrics. Optional learned guardian for Stage 3.5. Only this stage learns.
+```sh
+source .venv/bin/activate
+python 02_reactive_drive.py --seed 0
+python 02_reactive_drive.py --headless --seed 0 --max-steps 8
+python evaluate.py --controller 02_reactive_drive:create_controller
+```
 
-## Scenario saving and replay — future stage work
+`reactive.py` uses only the current observation. It checks front gap, closing
+speed/time-to-collision, adjacent-lane front AND rear gaps, and projected closing
+over a lane change. It also includes cars visibly moving toward a lane. It
+requests a clear adjacent lane when impeded, otherwise SLOWER; on a clear road it
+cruises toward 30 m/s. It does not read internal vehicle intentions, event
+schedules, ground truth, or learned weights. Named thresholds are at the top of
+the file. Working means traffic-dependent braking/lane changes; crashes remain
+possible. Discrete SLOWER reduces a speed target, not an instantaneous emergency stop.
 
-Stage 1 implements the shared metrics and evaluation runner described above.
-Stages 2-5 and scenario/replay functionality remain unimplemented. Preserve the
-Stage 1 metric definitions and fixed 50 seeds in future stage comparisons.
+## Stage 3 — developer-forced hazards
 
-JSON scenarios will save environment config, seed, every typed command with both
-wall-clock timestamp and effective simulation step, and per-step position, speed,
-and heading for all cars plus the ego action. Stage 3.5 adds acting controller and
-hazard schedule. Replay resets the seed and applies the same commands/events at
-the same steps, then verifies the result against the saved run. Scenario training
-recreates seeds and event schedules; it does not train on per-step log records.
+```sh
+python 03_forced_events.py --seed 10 --hazard hard_brake
+python 03_forced_events.py --seed 10 --hazard cut_in_left
+python 03_forced_events.py --headless --seed 10 --max-steps 8
+```
 
-Scripts print to the terminal and keep library caches under ignored `runs/`.
-Stage 1 metrics use local JSON/CSV files there; future scenarios will also stay local.
-No cloud logging, hosting, paid services, or runtime network calls are permitted.
+`hazards.py` subclasses the library's IDM vehicle for hard braking and cut-ins;
+installed files are unchanged. With no `--hazard`, kind and trigger time come
+from the seed. Initial scenarios stage one actor ahead or in a neighboring lane
+at reset, maintaining 50 traffic cars and avoiding initial overlap. At a road
+edge a seeded cut-in is mirrored to the available side and the resolved event
+is logged. Normal traffic is unchanged. The actor switches behavior when
+physics time reaches `trigger_time_s`, or when ego travel reaches
+`trigger_distance_m` for distance-scheduled scenarios.
+
+Hard braking lasts three seconds by default, with up to 6 m/s² deceleration.
+A forced cut-in uses the library steering controller and may be unsafe by
+design. Runtime developer commands affect an existing car without teleporting it.
+Working means the same seed repeats the same initial scene and scheduled hazard.
+
+## Stage 3.5 — you drive; assistance can take over
+
+```sh
+python 03_5_takeover.py --seed 10 --assist on
+python 03_5_takeover.py --seed 10 --assist off
+python 03_5_takeover.py --headless --seed 10 --assist on --max-steps 40
+python benchmark.py --stage 3.5
+```
+
+In the user-run window:
+
+- LEFT/RIGHT request a lane change.
+- UP/DOWN request faster/slower speed; releasing a key retains the current target.
+- A toggles assistance ON/OFF; S saves a scenario snapshot; Esc exits.
+- The banner reads **ASSIST ACTIVE** when the computer has control.
+
+The keyboard mapping feeds highway-env's manual-control mode. During assistance,
+normal action control resumes and human requests cannot overwrite the rescue.
+`assist.py` detects danger from the current observation only. It calls the Stage 2
+rules, checks target-lane clearance ahead and behind, and brakes if blocked.
+Control returns after three seconds of continuously safe detector readings.
+Thresholds are named constants. No AI training occurs here, and collision
+avoidance is a goal, not a guarantee.
+
+The default window lasts at most 200 decisions / 40 simulated seconds. The
+headless version uses the Stage 1 rule as a stand-in driver, and the benchmark
+runs the same 50 seeds once OFF and once ON. It reports triggered hazards,
+collisions, avoided percentage, secondary collisions, closest distance, average
+speed, and takeovers. A hazard is counted avoided only if it triggered and ego
+survived the full horizon without any collision. Early exits, step-limited runs,
+and crashes with other cars do not count as successful avoidance.
+
+Collision partners come from the simulator's collision solver, including impacts
+applied on the next physics tick, and count only when ego actually crashes.
+A secondary collision involves a car other than a triggered hazard actor.
+
+## Stage 4 — local developer command panel
+
+The user selected **pygame-only**. Gradio and huggingface_hub are not installed
+or used. No server, port, account, analytics, deployment, or network request is needed.
+
+```sh
+python 04_developer_panel.py --seed 0
+python 04_developer_panel.py --headless --seed 0 --max-steps 10 --command "make the car in front brake hard"
+```
+
+The simulation uses rgb_array frames in the window with a developer panel at
+the side. Type a command and press Enter:
+
+- `make the car in front brake hard` or `brake hard`
+- `force a cut-in from the left lane` or `cut-in from left`
+- `cut-in from right`
+- `save scenario`, `pause`, `resume`, `help`
+
+This is an allowlisted keyword/regex parser, never an LLM or arbitrary code
+executor. Missing lanes or eligible cars produce a helpful rejection rather
+than teleporting vehicles. The reactive controller drives the ego car. Saving
+and exiting write new local scenarios; the window stays open after an episode
+ends so its result can be inspected or saved. Headless `--command` inputs are
+submitted before step 1; pause/resume control the interactive window only.
+
+## Full benchmark and timing profiles
+
+```sh
+python benchmark.py
+python benchmark.py --stage 2
+python benchmark.py --stage 3.5
+python benchmark.py --smoke-test --max-steps 5
+```
+
+The full command runs seeds 0-49 for Stages 0, 1, 2, 3, 3.5 OFF/ON, and 4:
+350 episodes total. Every run uses the same three physics-tick metrics and a
+40-second horizon unless terminated by a collision. Stages 0-3 use 1 Hz policy
+decisions; interactive Stages 3.5/4 and their matching benchmarks use 5 Hz for
+keyboard/assist responsiveness. Physics remains 15 Hz throughout. OFF/ON trials
+use identical timing and seeded scenes. Do not attribute differences between
+1 Hz and 5 Hz profiles solely to the controller; all configs are saved explicitly.
+These frequencies are configuration choices, not measured latency improvements.
+
+Each stage gets per-seed scenario JSON, episode CSV, and a summary under a new
+`runs/benchmark_.../` directory. `--smoke-test` uses just seeds 0 and 1.
+`--max-steps` explicitly caps policy decisions and marks shortened episodes.
+Stage 4 benchmark uses the reactive driver without typed developer commands;
+use saved command scenarios for specific panel-driven experiments.
+
+Measured on November 3, 2026, with the pinned environment and all 50 seeds:
+
+- Random actions: 36/50 collisions; mean episode speed 21.649 m/s.
+- Stay-in-lane baseline: 50/50 collisions; 29.050 m/s.
+- Reactive stock traffic: 0/50 collisions; 22.804 m/s.
+- Forced hazards at 1 Hz: 9/50 collisions; 82% avoided; one secondary collision;
+  22.751 m/s.
+- Takeover at 5 Hz, assist OFF: 50/50 collisions, 48 hazards triggered, 0% avoided,
+  16 secondary collisions; closest center distance 2.027 m; 29.262 m/s.
+- Takeover at 5 Hz, assist ON: 3/50 collisions, 50 hazards triggered, **94% avoided**,
+  zero secondary collisions; closest center distance 3.794 m; 22.987 m/s;
+  365 takeovers across the 50 episodes.
+- Stage 4 stock traffic at 5 Hz: 0/50 collisions; 22.774 m/s.
+
+These are finite seeded experiments, not safety guarantees. The avoidance metric
+requires both a triggered hazard and completion without any ego collision;
+an episode ending before the hazard triggers is not an avoided hazard.
+The local audit verified all 350 episodes and their aggregate collision counts:
+`runs/benchmark_20261103T151818762627Z_ec2dd452/summary.json`.
+Run directories are ignored by Git; these files exist only on the machine that
+ran the benchmark. A fresh checkout can regenerate them with `python benchmark.py`.
+
+## Scenario saving and verified replay
+
+New-stage demos and `benchmark.py` save versioned JSON containing environment
+config, seed, initial state, initial hazard schedule, every submitted command
+with a UTC wall-clock timestamp and effective simulation step, and every policy
+step's car IDs, positions, speeds, headings, collision flags, ego action, reward,
+and controller identity. Takeover logs also include human requests and hazard
+outcomes. Metrics sample every physics tick; full car records sample each policy
+step. These are separate sampling rates.
+
+```sh
+python scenarios.py runs/SCENARIO_DIRECTORY/scenario.json
+```
+
+Replace the example path with a printed scenario path (benchmark seed JSON files
+also work). Replay is headless: it resets the same seed/config, reconstructs
+events and commands at the same steps, and replays the logged ego actions,
+including human actions. It checks every recorded car state, reward, termination
+flag, metric, and hazard outcome within a small floating-point tolerance. It
+fails on mismatch. This verifies the simulation trajectory; it does not prove
+that a changed controller would choose the same actions. Reproducibility assumes
+the pinned dependency versions. No JSON contains executable Python.
+
+Stage 0/1's original standalone demos retain their original log formats; run
+`benchmark.py --stage 0` or `--stage 1` for the shared replayable scenario format.
+
+## Stage 5 — advanced CPU reinforcement learning
+
+This is the **only learning stage**. The user approved installation of
+stable-baselines3 and PyTorch. Extra dependencies are pinned separately:
+
+```sh
+source .venv/bin/activate
+which python
+pip install --no-cache-dir -r requirements-stage5.txt
+python 05_train_policy.py train --timesteps 10000
+python 05_train_policy.py evaluate runs/TRAINING_DIRECTORY/policy.zip
+python 05_train_policy.py drive runs/TRAINING_DIRECTORY/policy.zip --seed 0
+```
+
+For a new installation, obtain approval before the optional pip command. Replace
+the model path with the path printed by training. Training starts from random
+weights locally; no model download occurs. DQN uses a small network, a bounded
+replay buffer, one CPU thread, and explicit `device="cpu"` for both training and
+inference. TensorBoard/cloud tracking are disabled. Short runs validate the
+pipeline and do not promise a better driver. `training.json` reports actual
+transitions, gradient updates, whether weights changed, device, and seed split.
+
+Training cycles seeds **1000-1049**. Checkpoints are validated on **2000-2004**
+every 2,000 transitions and at the end. Selection prefers fewer collisions, then
+higher average speed. The selected checkpoint becomes `policy.zip`; individual
+checkpoints are retained. Evaluation uses the fixed held-out **0-49** and compares
+the frozen learned policy to the reactive rule with identical metrics and config.
+Validation is a small selection set, not evidence of universal safety.
+
+Version 2 training converts the current observation into 24 features: ego motion
+and left/current/right lane availability, nearest front/rear gaps, relative
+speeds, and time to contact. Nearby cars entering a lane are included using their
+observed lateral velocity. This reduces the moving input slots the small network
+must interpret. No vehicle internals, scripted intentions, or ground-truth
+metrics enter the policy. Version 1 checkpoints still load with their original
+51-by-5 encoder; loading one does not improve its learned weights.
+
+The training wrapper rewards forward speed (`0.5 * speed / 30`), subtracts risk
+from short headway or time to contact, and penalizes risky lane-change requests
+and small unnecessary lane-change costs. A collision always returns **-10**.
+See `learning_features.py` for the formulas. These are hand-designed learning
+signals; the neural network chooses all five actions with **no rule-based action
+override or safety shield**. Scenario/evaluation logs retain the simulator's raw
+reward; training episode returns use this shaped reward and are not comparable.
+Per-training-episode metrics and progress CSV stay in the local training folder.
+
+`drive` opens a window for you to inspect a saved policy; it does not train.
+Add `--headless --max-steps 5` for a window-free smoke test. Working means the
+model loads, reports its selected actions, and saves a replayable scenario at
+the end. Crashes remain possible. Close the window or press Ctrl+C to exit.
+
+Additional options:
+
+```sh
+python 05_train_policy.py train --timesteps 1200 --hazards
+python 05_train_policy.py train --timesteps 1200 --scenario runs/SCENARIO_DIRECTORY/scenario.json
+python 05_train_policy.py evaluate runs/TRAINING_DIRECTORY/policy.zip --hazards
+python 05_train_policy.py evaluate runs/TRAINING_DIRECTORY/policy.zip --smoke-test
+```
+
+By default evaluation reruns both controllers. Optional
+`--reuse-reactive runs/PREVIOUS_EVALUATION_DIRECTORY/reactive` copies a historical
+stock-traffic baseline only after checking every seed, exact environment config,
+controller label, and completed-episode status. This avoids repeating unchanged
+baseline work; the summary explicitly records its source and reuse. The learned
+policy always runs fresh episodes. Reuse compares against that saved baseline,
+not any subsequent edits to the reactive controller.
+
+Scenario training recreates its seed, initial schedule, and command events on
+each reset. It **does not train on logged per-step records or logged actions**.
+Runtime hazard commands record their selected actor ID and target lane. If a
+learned trajectory has already made that actor unavailable, training skips that
+event and reports `unavailable_scheduled_events` in step info; it never resurrects
+or teleports cars.
+Training scenarios using held-out seeds 0-49 or validation seeds 2000-2004 are
+rejected: generate a scenario with a training seed such as 1000 instead.
+Validation uses independent seeded traffic (and seeded hazards with `--hazards`),
+not the exact typed-event sequence of a supplied training scenario.
+The optional learned takeover guardian
+is not enabled; Stage 3.5 continues to use the explicit reactive rules.
+
+### Measured Stage 5 correction (November 3, 2026)
+
+The original 1,200-transition model crashed in **50/50 stock-traffic evaluation
+episodes**. Its actions were 80.3% FASTER and 0% SLOWER. This was a poor learned
+policy, not evidence that merely loading a model makes it a competent driver.
+
+After the feature/reward changes above and 10,000 CPU training transitions
+(9,744 total gradient updates), validation selected the **6,000-step checkpoint**
+(5,743 updates). Checkpoints at 2,000/4,000/6,000/8,000/10,000 steps had respectively
+2/1/0/1/0 collisions across the five validation seeds. The 6,000-step checkpoint
+won the speed tie-break among the two crash-free validation candidates.
+
+The selected checkpoint was then frozen and tested on all 50 evaluation seeds:
+
+- Learned model: **2/50 collisions (4%)**, minimum center distance **2.680 m**,
+  mean episode speed **21.850 m/s**. It chose SLOWER on 18.9% of steps.
+- Reactive baseline: **0/50 collisions**, minimum center distance **3.998 m**,
+  mean episode speed **22.804 m/s**. These previously verified baseline records
+  were reused after exact seed/config/completion checks; the model's 50 episodes
+  were newly simulated. The output summary records the baseline's source.
+
+This is 48 fewer crashes in this fixed test, **not a guarantee or a complete
+elimination of crashes**. Remaining collision seeds are **10 and 46**; both logs
+end after a LANE_RIGHT action. The learned model still underperformed the reactive
+rule on collision count, so the takeover demo continues to use the rule controller.
+These tests concern stock traffic; they do not establish learned-policy safety
+against the forced hazards. Changes were tested together, so no individual
+feature or reward change is credited with a separately measured improvement.
+
+Local artifacts (ignored by Git):
+
+- Model and training provenance: `runs/stage5_20261103T201030071303Z_09dbd8ed/`.
+- Audited evaluation and per-step scenarios:
+  `runs/stage5_evaluation_20261103T204416859865Z_c3a4a4f2/`.
+- The earlier unsuccessful model remains in
+  `runs/stage5_20261103T151713908654Z_42d79d87/`.
+
+Watch the corrected checkpoint locally:
+
+```sh
+source .venv/bin/activate
+python 05_train_policy.py drive runs/stage5_20261103T201030071303Z_09dbd8ed/policy.zip --seed 0
+```
+
+This seed completed its full 40-second headless evaluation without a collision.
+The assistant verified loading, headless driving, and full-episode replay;
+window rendering remains a user-run check. A fresh checkout must train locally
+because model ZIPs and run artifacts are not committed.
+
+Installed optional versions: stable-baselines3 2.9.2 (MIT) and torch 2.15.0.
+PyTorch's installed metadata lists its composite open-source license expression:
+Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, BSL-1.0,
+ISC, MIT, and Zlib. Both APIs were checked against installed package source.
+
+After the approved Stage 5 install, every installed distribution outside the
+named allowed libraries is listed here (automatic dependencies plus pip):
+
+```text
+cloudpickle==3.1.2
+contourpy==1.4.0
+cycler==0.12.1
+Farama-Notifications==0.0.6
+filelock==4.2.7
+fonttools==4.67.0
+fsspec==2026.9.0
+Jinja2==3.1.6
+kiwisolver==1.5.1
+MarkupSafe==3.0.4
+mpmath==1.3.0
+networkx==3.7
+packaging==26.3
+pandas==3.0.6
+pillow==13.0.0
+pip==26.2.1
+pyparsing==3.3.3
+python-dateutil==2.9.0.post0
+setuptools==84.2.1
+six==1.17.0
+sympy==1.14.0
+typing_extensions==4.16.0
+```
+
+## Verification and file guide
+
+```sh
+python test_stage1.py
+python test_project.py
+python verify_runs.py runs/BENCHMARK_DIRECTORY
+```
+
+Both suites are headless. The newer tests cover rear clearance, cut-in closing
+speed, sustained-safe handback, assist disable, event triggering by time and
+distance, replay/tamper detection, command parsing, collision attribution,
+braking below 20 m/s, and disjoint training/evaluation seeds. UI window inspection
+and keyboard interaction remain user-run checks; the assistant does not open
+pygame windows. No latency or rendering-performance improvement is claimed.
+
+- `reactive.py`: observation-only rules.
+- `assist.py`: danger detection and takeover state.
+- `hazards.py`: vehicle subclasses, scenario environment, collision attribution.
+- `scenarios.py`: shared scenario records and replay verification.
+- `project_runner.py`, `benchmark.py`: demos and common stage comparisons.
+- `local_ui.py`: local pygame window and regex parser.
+- `learning.py`: optional CPU DQN training and held-out evaluation.
+- `learning_features.py`: observation-derived features and training-only rewards.
+- `policy_diagnostics.py`: action counts and crash counts from saved local runs.
+
+All outputs and model ZIPs remain ignored under `runs/`. No installed library
+was edited. No cloud logging, hosting, paid services, or runtime network calls
+are used. The project is a simulator demonstration, not software for a real car.
