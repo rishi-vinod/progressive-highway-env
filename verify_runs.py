@@ -35,6 +35,16 @@ def audit(directory, repair_labels=False):
                 repaired += 1
             if stage5:
                 assert all(step["controller"] == name for step in document["steps"]), "Wrong controller label"
+            if name == "learned_guarded":
+                for step in document["steps"]:
+                    decision = step["decision_info"]
+                    assert decision["requested_action"] in range(5)
+                    assert decision["executed_action"] == step["ego_action"]
+                    changed = decision["requested_action"] != decision["executed_action"]
+                    assert decision["guard_intervened"] == changed
+                    assert bool(decision["guard_reason"]) == changed
+                assert document["extra"]["guard_interventions"] == sum(
+                    step["decision_info"]["guard_intervened"] for step in document["steps"])
             assert len(document["steps"]) == document["episode"]["steps"]
             assert document["env_config"]["observation"]["normalize"] is False
             assert len(document["initial_cars"]) == 51
@@ -45,6 +55,9 @@ def audit(directory, repair_labels=False):
         assert sorted(d["seed"] for d in documents) == list(range(50)), "Missing or duplicate evaluation seeds"
         assert summary["episodes"] == 50
         assert summary["collisions"] == sum(d["episode"]["collision"] for d in documents)
+        if name == "learned_guarded":
+            assert root_summary["guard_enabled"]
+            assert summary["guard_interventions"] == sum(d["extra"]["guard_interventions"] for d in documents)
         if not stage5:
             assert summary["complete"]
             assert summary["hazards_triggered"] == sum(d["hazard_metrics"]["hazards_triggered"] for d in documents)

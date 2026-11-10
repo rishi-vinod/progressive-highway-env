@@ -46,8 +46,12 @@ def run_recorded(stage, seed, *, max_steps=40, headless=True, assist_on=True, ki
                     action, label = baseline(observation), "rule"
                 else:
                     action, label = reactive_action(observation), "rule"
-            session.step(int(action), label, human_action)
+            decision_info = getattr(controller, "decision_info", None) if controller is not None else None
+            session.step(int(action), label, human_action, decision_info)
             if verbose:
+                if decision_info and decision_info["guard_intervened"]:
+                    print(f"GUARD ACTIVE: requested={decision_info['requested_action']} "
+                          f"executed={action} reason={decision_info['guard_reason']}", flush=True)
                 print(f"step={session.step_number:03d} action={action} controller={label} "
                       f"collision={session.result().collision}", flush=True)
             if session.ended or session.env.unwrapped.done:
@@ -56,6 +60,9 @@ def run_recorded(stage, seed, *, max_steps=40, headless=True, assist_on=True, ki
                 break
         extra = {"stage": stage, "assist_enabled": assist_on if stage == "3.5" else None,
                  "takeovers": helper.takeovers, **session.hazard_metrics()}
+        if controller is not None and hasattr(controller, "decision_info"):
+            extra["guard_interventions"] = sum(
+                step.get("decision_info", {}).get("guard_intervened", False) for step in session.records)
         result = session.result()
         if save_directory is not None:
             write_json(save_directory / f"seed_{seed:02d}.json", session.document(extra))

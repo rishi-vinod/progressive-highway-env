@@ -7,6 +7,7 @@ from saved per-step vehicle records or downloads a pretrained model.
 import argparse
 import copy
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -100,7 +101,7 @@ class TrainingEnv(gym.Wrapper):
         return encode_observation(observation), reward, terminated, truncated, info
 
 
-def load_policy(path):
+def load_policy(path, *, guard=False):
     from stable_baselines3 import DQN
     import torch
     torch.set_num_threads(1)
@@ -121,6 +122,10 @@ def load_policy(path):
         action, _ = model.predict(encode_observation(observation, version), deterministic=True)
         return int(action)
 
+    if guard:
+        from policy_guard import GuardedPolicy
+        print("RULE-BASED GUARD ENABLED; results are learned policy + guard.", flush=True)
+        return GuardedPolicy(controller)
     return controller
 
 
@@ -234,13 +239,15 @@ def read_reactive_baseline(directory, seed, config):
     return document, EpisodeResult(**document["episode"])
 
 
-def evaluate_policy(model_path, *, smoke=False, hazards=False, reuse_reactive=None):
+def evaluate_policy(model_path, *, smoke=False, hazards=False, reuse_reactive=None, guard=False):
     # Check the training provenance before using the fixed held-out benchmark.
     with (Path(model_path).parent / "training.json").open(encoding="utf-8") as stream:
         provenance = json.load(stream)
     if set(provenance["training_seeds"]) & set(HELD_OUT_SEEDS):
         raise ValueError("Training and evaluation seeds overlap")
-    learned = load_policy(model_path)
+    model_source = Path(model_path).resolve().relative_to(Path.cwd()).as_posix()
+    model_fingerprint = hashlib.sha256(Path(model_path).read_bytes()).hexdigest()
+    learned = load_policy(model_path, guard=guard)
     evaluation_config = copy.deepcopy(provenance["training_config"])
     evaluation_config["manual_control"] = False
     evaluation_config["hazard_schedule"] = []
@@ -254,34 +261,44 @@ def evaluate_policy(model_path, *, smoke=False, hazards=False, reuse_reactive=No
         print(f"Checking and reusing stored reactive baseline: {baseline_source}", flush=True)
     directory = new_run_directory("stage5_evaluation")
     summaries = {}
-    for name, controller in (("reactive", reactive_action), ("learned", learned)):
+    learned_name = "learned_guarded" if guard else "learned"
+    for name, controller in (("reactive", reactive_action), (learned_name, learned)):
         child = directory / name
         child.mkdir()
         results = []
+        interventions = 0
         for seed in seeds:
             if name == "reactive" and reuse_reactive is not None:
                 document, result = read_reactive_baseline(reuse_reactive, seed, evaluation_config)
                 write_json(child / f"seed_{seed:02d}.json", document)
             else:
-                result, _ = run_recorded("3" if hazards else "2", seed, controller=controller,
+                result, extra = run_recorded("3" if hazards else "2", seed, controller=controller,
                                          save_directory=child, config=evaluation_config, max_steps=horizon,
                                          controller_name=name)
+                interventions += extra.get("guard_interventions", 0)
             results.append(result)
-            print(f"{name} held-out seed={seed:02d} collision={result.collision} "
+            print(f"{name} benchmark seed={seed:02d} collision={result.collision} "
                   f"speed={result.average_speed_mps:.3f}", flush=True)
         write_episode_csv(child / "episodes.csv", results)
         summaries[name] = summarize(results)
+        if name == "learned_guarded":
+            summaries[name]["guard_interventions"] = interventions
     write_json(directory / "summary.json", {"summaries": summaries, "evaluation_seeds": list(seeds),
+                                             "model_source": model_source,
+                                             "model_sha256": model_fingerprint,
                                              "training_seeds": provenance["training_seeds"],
                                              "validation_seeds": provenance.get("validation_seeds", []),
                                              "reused_reactive_baseline": reuse_reactive is not None,
                                              "reactive_baseline_source": baseline_source,
+                                             "guard_enabled": guard,
                                              "smoke_test": smoke, "hazards": hazards})
     print("controller episodes collisions min_distance_m mean_speed_mps")
     for name, s in summaries.items():
         print(f"{name:10s} {s['episodes']:8d} {s['collisions']:10d} {s['closest_distance_m']:14.3f} "
               f"{s['mean_episode_average_speed_mps']:14.3f}")
-    print(f"Saved held-out comparison: {directory}")
+        if "guard_interventions" in s:
+            print(f"  Rule-based guard interventions: {s['guard_interventions']}")
+    print(f"Saved policy comparison: {directory}")
     return directory
 
 
@@ -296,6 +313,7 @@ def main():
     eval_parser.add_argument("model", type=Path)
     eval_parser.add_argument("--smoke-test", action="store_true")
     eval_parser.add_argument("--hazards", action="store_true")
+    eval_parser.add_argument("--guard", action="store_true", help="Evaluate learned policy + explicit rule-based guard.")
     eval_parser.add_argument("--reuse-reactive", type=Path,
                              help="Reuse an existing reactive result folder only if seeds/config/horizon match.")
     drive_parser = subparsers.add_parser("drive", help="Watch a saved learned policy; no further training.")
@@ -303,13 +321,14 @@ def main():
     drive_parser.add_argument("--seed", type=nonnegative_int, default=0)
     drive_parser.add_argument("--headless", action="store_true")
     drive_parser.add_argument("--hazards", action="store_true")
+    drive_parser.add_argument("--guard", action="store_true", help="Check the learned actions with an observation-only rule guard.")
     drive_parser.add_argument("--max-steps", type=positive_int, default=None)
     args = parser.parse_args()
     if args.operation == "train":
         train(args.timesteps, hazards=args.hazards, scenario_path=args.scenario)
     elif args.operation == "evaluate":
         evaluate_policy(args.model, smoke=args.smoke_test, hazards=args.hazards,
-                        reuse_reactive=args.reuse_reactive)
+                        reuse_reactive=args.reuse_reactive, guard=args.guard)
     else:
         with (args.model.parent / "training.json").open(encoding="utf-8") as stream:
             provenance = json.load(stream)
@@ -319,7 +338,8 @@ def main():
         try:
             result, _ = run_recorded("3" if args.hazards else "2", args.seed,
                                      max_steps=horizon, headless=args.headless,
-                                     controller=load_policy(args.model), controller_name="learned",
+                                     controller=load_policy(args.model, guard=args.guard),
+                                     controller_name="learned_guarded" if args.guard else "learned",
                                      config=config, verbose=True)
             print(result)
         except KeyboardInterrupt:

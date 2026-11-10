@@ -471,8 +471,10 @@ The training wrapper rewards forward speed (`0.5 * speed / 30`), subtracts risk
 from short headway or time to contact, and penalizes risky lane-change requests
 and small unnecessary lane-change costs. A collision always returns **-10**.
 See `learning_features.py` for the formulas. These are hand-designed learning
-signals; the neural network chooses all five actions with **no rule-based action
-override or safety shield**. Scenario/evaluation logs retain the simulator's raw
+signals. By default the neural network chooses all five actions without a
+rule-based override. The optional `--guard` mode described below checks its
+requests before execution and is explicitly labeled **learned policy + guard**.
+Scenario/evaluation logs retain the simulator's raw
 reward; training episode returns use this shaped reward and are not comparable.
 Per-training-episode metrics and progress CSV stay in the local training folder.
 
@@ -560,6 +562,82 @@ The assistant verified loading, headless driving, and full-episode replay;
 window rendering remains a user-run check. A fresh checkout must train locally
 because model ZIPs and run artifacts are not committed.
 
+### Optional guard for learned driving
+
+Replaying the two remaining failures showed unsafe right-lane requests: in seed
+10 another car was alongside ego; in seed 46 a faster car was about 2 m behind
+in the target lane. The model's collision penalty had not reliably prevented
+these requests. The installed simulator checks road reachability when changing
+lanes; it does not reject a discrete request because another car occupies that
+lane.
+
+`policy_guard.py` adds explicit rules around the saved network. It uses only the
+current observation and the same front/rear gap, relative-speed, projected-gap,
+and time-to-collision checks used by the reactive controller. Unsafe lane changes
+are replaced by SLOWER. Repeated lane-change requests during lateral motion are
+held with IDLE, or SLOWER when danger is detected. Dangerous IDLE/FASTER requests
+are also replaced by SLOWER. Clear requests pass through. No weights are changed.
+
+Run the guarded window yourself, including a previously failing seed:
+
+```sh
+source .venv/bin/activate
+python 05_train_policy.py drive runs/stage5_20261103T201030071303Z_09dbd8ed/policy.zip --guard --seed 10
+```
+
+The terminal announces `RULE-BASED GUARD ENABLED`, labels steps
+`controller=learned_guarded`, and prints `GUARD ACTIVE` with the requested action,
+executed action, and reason whenever it intervenes. The car should complete the
+40-second seed-10 run; close the window or press Ctrl+C to exit. Window behavior
+is a user-run check. Omit `--guard` to inspect the raw learned policy, including
+its documented failures. The guard is optional and disabled by default.
+
+Headless checks and evaluation:
+
+```sh
+python test_policy_guard.py
+python validate_policy_guard.py runs/stage5_20261103T201030071303Z_09dbd8ed/policy.zip
+python 05_train_policy.py evaluate runs/stage5_20261103T201030071303Z_09dbd8ed/policy.zip --guard
+```
+
+Guard validation uses seeds 2005-2009, separate from training and model selection;
+known failure seeds 10 and 46 are reported separately as regressions. The main
+evaluation still uses the fixed 0-49 seeds and shared metrics. Once failures from
+that set have informed a fix, it is a regression benchmark, not a fresh unseen
+test of generalization. Results must be reported as **learned policy + guard**;
+they do not measure an improvement to the neural network itself.
+
+Each guarded scenario step adds `decision_info`: requested action, executed
+action, intervention flag, and reason. Episode and evaluation summaries count
+guard interventions separately from Stage 3.5 takeovers. Replay preserves the
+executed trajectory and decision records. `verify_runs.py` checks their action
+and intervention-count consistency. Evaluation metadata also records the model
+file's relative path and SHA-256 fingerprint. `policy_diagnostics.py` distinguishes
+model requests from executed actions for guarded runs. No guard can guarantee
+avoidance after an already-unavoidable traffic situation develops.
+
+Measured with the same saved model, 50 stock-traffic seeds, and 40-second horizon:
+
+- Raw learned policy (previous recorded benchmark): **2/50 collisions**, mean
+  episode speed **21.850 m/s**, minimum center distance **2.680 m**.
+- Learned policy + guard (new run): **0/50 collisions**, mean episode speed
+  **21.613 m/s**, minimum center distance **3.990 m**. The guard overrode
+  **99 of 2,000 actions (4.95%)**. Overrides are not counts of crashes prevented.
+- Five separate validation seeds and both known failure regressions also finished
+  without a collision. The 26 headless unit/integration tests passed. Replays of
+  both formerly failing seeds reproduced their complete guarded trajectories.
+
+The weights were not retrained for this change. These measurements establish the
+guarded system's result on the tested scenes, not universal collision avoidance
+or an improvement to the network alone. The stock-traffic test does not establish
+performance against developer-forced hazards. The reactive comparison again used
+previously verified records with matching environment settings.
+
+Local guarded benchmark:
+`runs/stage5_evaluation_20261110T050021461945Z_86d3ced6/summary.json`.
+Separate validation and crash regressions:
+`runs/guard_validation_20261110T045913472701Z_728b9f01/summary.json`.
+
 Installed optional versions: stable-baselines3 2.9.2 (MIT) and torch 2.15.0.
 PyTorch's installed metadata lists its composite open-source license expression:
 Apache-2.0, Apache-2.0 WITH LLVM-exception, BSD-2-Clause, BSD-3-Clause, BSL-1.0,
@@ -616,6 +694,9 @@ pygame windows. No latency or rendering-performance improvement is claimed.
 - `local_ui.py`: local pygame window and regex parser.
 - `learning.py`: optional CPU DQN training and held-out evaluation.
 - `learning_features.py`: observation-derived features and training-only rewards.
+- `policy_guard.py`: optional, explicitly labeled rule checks around learned actions.
+- `validate_policy_guard.py`: separate validation seeds and known crash regressions.
+- `inspect_policy_failures.py`: headless replay with pre-crash observation diagnostics.
 - `policy_diagnostics.py`: action counts and crash counts from saved local runs.
 
 All outputs and model ZIPs remain ignored under `runs/`. No installed library

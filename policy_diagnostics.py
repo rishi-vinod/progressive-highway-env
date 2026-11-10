@@ -9,21 +9,34 @@ from pathlib import Path
 
 def diagnose(training, evaluation):
     counts = Counter()
+    requested_counts = Counter()
+    interventions = 0
     episodes = []
     failures = []
     for path in sorted(evaluation.glob("seed_[0-9][0-9].json")):
         with path.open(encoding="utf-8") as stream:
             document = json.load(stream)
         counts.update(step["ego_action"] for step in document["steps"])
+        for step in document["steps"]:
+            if "decision_info" in step:
+                decision = step["decision_info"]
+                requested_counts[decision["requested_action"]] += 1
+                interventions += decision["guard_intervened"]
         episodes.append(document["episode"])
         if document["episode"]["collision"]:
             failures.append((document["seed"], [s["ego_action"] for s in document["steps"][-5:]]))
     labels = {0: "LANE_LEFT", 1: "IDLE", 2: "LANE_RIGHT", 3: "FASTER", 4: "SLOWER"}
     print(f"Evaluation episodes={len(episodes)}, collisions={sum(e['collision'] for e in episodes)}")
     total = sum(counts.values())
+    print("Executed actions:")
     for action, label in labels.items():
         percent = 100 * counts[action] / total if total else 0
         print(f"{label:12s} {counts[action]:5d} actions ({percent:.1f}%)")
+    if requested_counts:
+        print(f"Rule-based guard interventions: {interventions}")
+        print("Model requests before guard:")
+        for action, label in labels.items():
+            print(f"  {label:12s} {requested_counts[action]:5d}")
     print(f"Collision seeds: {[seed for seed, _ in failures]}")
     for seed, actions in failures:
         print(f"  seed={seed}: last actions={[labels[action] for action in actions]}")

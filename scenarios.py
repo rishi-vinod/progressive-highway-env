@@ -60,7 +60,7 @@ class Session:
         self.commands.append(entry)
         return entry
 
-    def step(self, action, controller="rule", human_action=None):
+    def step(self, action, controller="rule", human_action=None, decision_info=None):
         if self.ended:
             raise RuntimeError("Episode already ended")
         if not self.env.action_space.contains(action):
@@ -82,6 +82,8 @@ class Session:
                              "controller": controller, "reward": float(reward),
                              "terminated": bool(terminated), "truncated": bool(truncated),
                              "cars": snapshot(self.env)})
+        if decision_info is not None:
+            self.records[-1]["decision_info"] = copy.deepcopy(decision_info)
         return self.observation
 
     def result(self):
@@ -147,7 +149,8 @@ def replay_document(saved):
             for command in saved["commands"]:
                 if command["effective_step"] == record["step"]:
                     session.command(command["text"], command["event"], wall_clock=command["wall_clock_timestamp"])
-            session.step(record["ego_action"], record["controller"], record.get("human_action"))
+            session.step(record["ego_action"], record["controller"], record.get("human_action"),
+                         record.get("decision_info"))
             assert_same(session.records[-1], record, f"step_{record['step']}")
         # Commands entered just before save can be scheduled for the next step.
         for command in saved["commands"]:
