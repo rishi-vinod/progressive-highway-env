@@ -44,6 +44,9 @@ def main() -> None:
     )
     args = parser.parse_args()
     env = None
+    print("MODE: Stage 0 — random actions; no trained model or guard.", flush=True)
+    print("For the guarded learned car, use 05_train_policy.py drive with --guard. "
+          "See README: 'Run the guarded learned demo'.", flush=True)
 
     try:
         env = gym.make("highway-v0", render_mode=None if args.headless else "human")
@@ -58,6 +61,8 @@ def main() -> None:
         )
         print(f"Actions: {action_names}")
         print("Random actions only; no learning.")
+        print(f"Episode limit: {base_env.config['duration']} simulated seconds. "
+              "--max-steps is an upper limit; a collision can end the episode earlier.")
 
         for step in range(1, args.max_steps + 1):
             # The stock viewer handles its close button by calling env.close(),

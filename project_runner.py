@@ -29,6 +29,10 @@ def run_recorded(stage, seed, *, max_steps=40, headless=True, assist_on=True, ki
     rng = np.random.default_rng(seed)
     try:
         if verbose:
+            settings = session.env.unwrapped.config
+            print(f"Display mode: {'HEADLESS (no window)' if headless else 'WINDOWED'} | "
+                  f"offscreen_rendering={settings['offscreen_rendering']} | "
+                  f"real_time_rendering={settings['real_time_rendering']}", flush=True)
             print_observation_config(session.env.unwrapped.config)
         for _ in range(max_steps):
             observation = session.observation.copy()

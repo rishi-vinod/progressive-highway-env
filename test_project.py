@@ -58,6 +58,38 @@ class ControllerTests(unittest.TestCase):
 
 
 class ScenarioTests(unittest.TestCase):
+    def test_saved_headless_settings_are_overridden_for_window_request(self):
+        # Inspect configuration only: constructing a human-mode environment
+        # would open a display during reset and is intentionally not done here.
+        from hazards import scenario_settings
+        saved = copy.deepcopy(ENV_CONFIG)
+        saved.update({"offscreen_rendering": True, "real_time_rendering": False})
+        original = copy.deepcopy(saved)
+        windowed = scenario_settings("human", config=saved)
+        self.assertFalse(windowed["offscreen_rendering"])
+        self.assertTrue(windowed["real_time_rendering"])
+        self.assertEqual(saved, original)
+        for key in ENV_CONFIG:
+            self.assertEqual(windowed[key], saved[key])
+        for mode in (None, "rgb_array"):
+            offscreen = scenario_settings(mode, config=windowed)
+            self.assertTrue(offscreen["offscreen_rendering"])
+            self.assertFalse(offscreen["real_time_rendering"])
+
+    def test_headless_session_never_creates_viewer_from_saved_window_settings(self):
+        config = copy.deepcopy(ENV_CONFIG)
+        config.update({"offscreen_rendering": False, "real_time_rendering": True})
+        session = Session(0, config=config)
+        try:
+            session.step(IDLE)
+            self.assertIsNone(session.env.unwrapped.render_mode)
+            self.assertIsNone(session.env.unwrapped.viewer)
+            self.assertTrue(session.env.unwrapped.config["offscreen_rendering"])
+            self.assertFalse(session.env.unwrapped.config["real_time_rendering"])
+            self.assertEqual(replay_document(session.document()), session.result())
+        finally:
+            session.close()
+
     def test_custom_controller_label_is_preserved(self):
         import json
         from project_runner import run_recorded

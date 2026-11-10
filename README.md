@@ -5,6 +5,39 @@ A local, free, open-source driving simulation built one stage at a time on macOS
 Parts 1-2 and Stages 1-4 (including 3.5) do **not** learn. Only Stage 5 learns.
 No accounts, API keys, paid services, model downloads, or runtime network calls.
 
+## Run the guarded learned demo
+
+To see the trained car with the new guard, run these commands from the project
+folder using the saved model on this machine:
+
+```sh
+source .venv/bin/activate
+python 05_train_policy.py drive runs/stage5_20261103T201030071303Z_09dbd8ed/policy.zip --guard --seed 46
+```
+
+Use `source .venv/bin/activate`, rather than executing `.venv/bin/activate` by
+itself, to activate Python in your current terminal. The demo opens a pygame
+window. The terminal prints `RULE-BASED GUARD ENABLED`,
+`controller=learned_guarded`, and `GUARD ACTIVE` when a request is overridden.
+Seed 46 exercises the guard and completed all 40 simulated seconds in headless
+verification. Close the window or press Ctrl+C to stop.
+
+The command prints `Display mode: WINDOWED | offscreen_rendering=False |
+real_time_rendering=True` before driving. Saved training configs contain
+`offscreen_rendering=True`; the scenario factory now overrides saved display
+flags to match the requested mode. This fixes the earlier bug where the guarded
+demo printed steps but never opened a window. Windowed playback is paced in real
+time; `--headless` remains window-free and runs without display pacing.
+
+`00_random_drive.py` is the original Stage 0 random-action demo. It does not load
+the trained model or enable the guard. Increasing `--max-steps` to 1000 does not
+change its controller or extend the environment's 40-second episode duration;
+a collision can end it sooner. For keyboard driving with takeover, use
+`python 03_5_takeover.py --seed 46 --assist on` instead (rules, no learning).
+
+The model path above refers to a local artifact ignored by Git. On a fresh
+checkout, follow Stage 5 below to train locally and use the model path it prints.
+
 ## Setup (Part 1)
 
 Run commands from this repository's root. Python 3.12 is required for this setup;

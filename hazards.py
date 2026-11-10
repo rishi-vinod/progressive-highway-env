@@ -144,8 +144,21 @@ class ScenarioEnv(MeasuredHighwayEnv):
         return event
 
 
-def make_scenario_env(seed, render_mode=None, schedule=None, config=None):
+def scenario_settings(render_mode=None, schedule=None, config=None):
+    """Select display settings for this run, independently of saved training flags.
+
+highway-env preserves an explicit offscreen_rendering value from a saved config,
+even when render_mode changes. Training exports True, so a windowed replay or
+policy demo must override that value before the environment's first reset.
+"""
     settings = copy.deepcopy(ENV_CONFIG if config is None else config)
     settings["hazard_schedule"] = copy.deepcopy(schedule or [])
+    settings["offscreen_rendering"] = render_mode != "human"
+    settings["real_time_rendering"] = render_mode == "human"
+    return settings
+
+
+def make_scenario_env(seed, render_mode=None, schedule=None, config=None):
+    settings = scenario_settings(render_mode, schedule, config)
     spec = EnvSpec(id="progressive-scenarios-v0", entry_point=ScenarioEnv)
     return gym.make(spec, config=settings, render_mode=render_mode)
