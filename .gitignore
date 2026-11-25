@@ -2,6 +2,7 @@
 __pycache__/
 .DS_Store
 runs/
+logs/
 *.zip
 
 # Keep local credentials and private-key files out of commits.

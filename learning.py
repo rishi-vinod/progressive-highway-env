@@ -334,6 +334,11 @@ def main():
             provenance = json.load(stream)
         config = copy.deepcopy(provenance["training_config"])
         config.update({"manual_control": False, "hazard_schedule": []})
+        if not args.headless:
+            # highway-env draws each intermediate physics tick in human mode.
+            # The training profile has only 15 ticks/s; double display ticks
+            # for the live demo without changing saved or headless profiles.
+            config["simulation_frequency"] = 30
         horizon = args.max_steps or int(config["duration"] * config["policy_frequency"])
         try:
             result, _ = run_recorded("3" if args.hazards else "2", args.seed,

@@ -14,6 +14,9 @@ from assist import AssistController
 from reactive import reactive_action, IDLE, LANE_LEFT, LANE_RIGHT, FASTER, SLOWER
 import pygame
 
+UI_FREQUENCY_HZ = 30
+OLD_UI_FREQUENCY_HZ = 5
+
 
 def parse_command(text):
     """A small allowlisted parser. No eval, model, API, shell, or network calls."""
@@ -49,13 +52,17 @@ def execute_command(session, text):
 
 def run_window(stage, seed=0, max_steps=200, assist_on=True):
     """User-run only. rgb_array feeds one local pygame window with controls."""
+    # Keep --max-steps' previous wall-clock duration (it counted 5 Hz steps).
+    display_steps = max_steps * UI_FREQUENCY_HZ // OLD_UI_FREQUENCY_HZ
     settings = copy.deepcopy(ENV_CONFIG)
-    # Human input is sampled at 5 Hz. Benchmark files record their own frequency;
-    # the OFF/ON benchmark uses a matched profile on both sides.
-    settings.update({"policy_frequency": 5, "screen_width": 900, "screen_height": 400})
+    # Render a fresh physics state at 30 Hz; the old 5 Hz UI repeated each
+    # frame on a 60 Hz display. Benchmarks retain their matched saved profile.
+    settings.update({"simulation_frequency": UI_FREQUENCY_HZ,
+                     "policy_frequency": UI_FREQUENCY_HZ,
+                     "screen_width": 900, "screen_height": 400})
     session = Session(seed, seeded_schedule(seed) if stage == "3.5" else [],
                       render_mode="rgb_array", config=settings)
-    helper = AssistController(assist_on, policy_dt=0.2)
+    helper = AssistController(assist_on, policy_dt=1 / UI_FREQUENCY_HZ)
     message = "Arrow keys drive. A toggles assist. Esc exits." if stage == "3.5" else "Type help or a developer command."
     text = ""
     history = [message]
@@ -73,7 +80,7 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
         # Render to an offscreen surface first; highway-env does not own events.
         frame = session.env.render()
         session.env.unwrapped.enable_auto_render = False
-        next_step = time.monotonic() + 0.2
+        next_step = time.monotonic() + 1 / UI_FREQUENCY_HZ
         while running:
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -116,7 +123,7 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
                     elif stage == "4" and event.unicode.isprintable() and len(text) < 100:
                         text += event.unicode
             now = time.monotonic()
-            if running and not paused and not session.ended and session.step_number < max_steps and now >= next_step:
+            if running and not paused and not session.ended and session.step_number < display_steps and now >= next_step:
                 human_action = pending_action if stage == "3.5" else None
                 if stage == "3.5":
                     action = helper.choose(session.observation.copy(), pending_action)
@@ -127,9 +134,9 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
                 pending_action = IDLE
                 frame = session.env.render()
                 session.env.unwrapped.enable_auto_render = False
-                next_step = now + 0.2
+                next_step = now + 1 / UI_FREQUENCY_HZ
             if paused:
-                next_step = now + 0.2
+                next_step = now + 1 / UI_FREQUENCY_HZ
             screen.fill((18, 24, 32))
             surface = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
             screen.blit(surface, (15, 80))
@@ -137,7 +144,7 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
             title = "ASSIST ACTIVE" if active else "HUMAN CONTROL" if stage == "3.5" else "DEVELOPER CONTROL PANEL"
             screen.blit(font.render(title, True, (255, 190, 70) if active else (110, 220, 170)), (20, 20))
             status = f"step {session.step_number} | assist {'ON' if helper.enabled else 'OFF'} | " if stage == "3.5" else f"step {session.step_number} | "
-            status += "episode ended - save or Esc" if session.ended or session.step_number >= max_steps else "paused" if paused else "running"
+            status += "episode ended - save or Esc" if session.ended or session.step_number >= display_steps else "paused" if paused else "running"
             screen.blit(small.render(status, True, (220, 225, 230)), (20, 50))
             instructions = ["LEFT/RIGHT: change lane", "UP/DOWN: faster/slower", "A: assist ON/OFF", "S: save scenario", "Esc: quit"] if stage == "3.5" else ["Developer commands", "brake hard", "cut-in from left/right", "save scenario", "pause / resume", "Enter submits; Esc quits"]
             for index, line in enumerate(instructions):
@@ -155,11 +162,12 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
     except KeyboardInterrupt:
         print("Interrupted.")
     finally:
-        if not session.ended and session.step_number < max_steps:
+        if not session.ended and session.step_number < display_steps:
             session.end_reason = "window_closed"
         try:
             path = session.save(extra={"stage": stage, "takeovers": helper.takeovers,
-                                       "assist_enabled": helper.enabled, "ui_policy_frequency": 5})
+                                       "assist_enabled": helper.enabled,
+                                       "ui_policy_frequency": UI_FREQUENCY_HZ})
             print(f"Saved scenario: {path}")
         finally:
             session.close()

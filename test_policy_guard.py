@@ -39,10 +39,28 @@ class PolicyGuardTests(unittest.TestCase):
         obs = observation([(98, 8, 25, 0)], speed=20)
         original = obs.copy()
         policy = GuardedPolicy(model)
-        self.assertEqual(policy(obs), SLOWER)
+        self.assertEqual(policy(obs), IDLE)
         self.assertTrue((original == obs).all())
         self.assertEqual(policy.decision_info["requested_action"], LANE_RIGHT)
         self.assertTrue(policy.decision_info["guard_intervened"])
+
+    def test_unneeded_brake_and_lane_oscillation_are_suppressed(self):
+        clear = observation(speed=25)
+        brake = GuardedPolicy(lambda obs: SLOWER)
+        self.assertEqual(brake(clear), IDLE)
+        self.assertEqual(brake.decision_info["guard_reason"], "no_near_leader")
+
+        # A slow near leader justifies one safe pass. A reverse request one
+        # decision later must wait, even if the target lane appears clear.
+        near = observation([(130, 4, 15, 0)], speed=25)
+        policy = GuardedPolicy(lambda obs: LANE_LEFT if obs[0, 2] > 2 else LANE_RIGHT)
+        self.assertEqual(policy(near), LANE_LEFT)
+        returning = observation([(130, 0, 15, 0)], speed=25)
+        returning[0, 2] = 0
+        self.assertEqual(policy(returning), IDLE)
+        self.assertEqual(policy.decision_info["guard_reason"], "lane_change_cooldown")
+        policy.reset()
+        self.assertEqual(policy(returning), LANE_RIGHT)
 
     def test_requested_and_executed_actions_survive_replay(self):
         config = copy.deepcopy(ENV_CONFIG)
@@ -55,7 +73,7 @@ class PolicyGuardTests(unittest.TestCase):
                 session.step(action, "learned_guarded", decision_info=policy.decision_info)
             document = session.document()
             self.assertTrue(document["steps"][0]["decision_info"]["guard_intervened"])
-            self.assertEqual(document["steps"][0]["ego_action"], SLOWER)
+            self.assertEqual(document["steps"][0]["ego_action"], IDLE)
             self.assertEqual(replay_document(document), session.result())
         finally:
             session.close()

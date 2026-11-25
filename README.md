@@ -28,6 +28,28 @@ real_time_rendering=True` before driving. Saved training configs contain
 flags to match the requested mode. This fixes the earlier bug where the guarded
 demo printed steps but never opened a window. Windowed playback is paced in real
 time; `--headless` remains window-free and runs without display pacing.
+The live Stage 5 window now renders 30 physics ticks per second; its headless
+training and evaluation profile remains unchanged. The Stage 3.5/4 pygame panel
+also displays fresh simulation states at 30 Hz while preserving the previous
+`--max-steps` duration. Actual display smoothness depends on this Mac's render
+throughput and must be checked by running the window locally.
+
+For a local per-decision CSV trace, run the headless diagnostic with `--debug`:
+
+```sh
+python diagnose_drive.py runs/stage5_20261103T201030071303Z_09dbd8ed/policy.zip --debug --repeat-check
+```
+
+It writes to ignored `logs/` and prints the fixed-seed metrics. `leader_id` is
+an observation row label because kinematics observations do not expose car IDs;
+the guard receives no ground-truth vehicle data. The optional guard suppresses
+unneeded model braking and lane changes, with a four-decision lane-change
+cooldown. The original learned model is unchanged.
+On the fixed 50 stock-traffic seeds, the updated guarded policy had 0
+collisions, 21.745 m/s mean speed, 50 brake actions with no same-lane leader
+within 45 m, and 0.50 lane-change commands per episode. The previous guard had
+0 collisions, 21.613 m/s, 306 such brake actions, and 2.06 lane changes per
+episode. The logs for both runs are local under ignored `logs/`.
 
 `00_random_drive.py` is the original Stage 0 random-action demo. It does not load
 the trained model or enable the guard. Increasing `--max-steps` to 1000 does not

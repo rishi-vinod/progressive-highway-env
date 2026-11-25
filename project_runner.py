@@ -28,6 +28,8 @@ def run_recorded(stage, seed, *, max_steps=40, headless=True, assist_on=True, ki
     helper = AssistController(assist_on, 1 / session.env.unwrapped.config["policy_frequency"])
     rng = np.random.default_rng(seed)
     try:
+        if controller is not None and hasattr(controller, "reset"):
+            controller.reset()
         if verbose:
             settings = session.env.unwrapped.config
             print(f"Display mode: {'HEADLESS (no window)' if headless else 'WINDOWED'} | "
