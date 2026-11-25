@@ -84,8 +84,41 @@ class ControllerTests(unittest.TestCase):
         obs[0, 3] = 20
         self.assertEqual(helper.choose(obs, IDLE), IDLE)
         helper.toggle()
-        self.assertNotEqual(helper.choose(observation([(90, 4, 30, 0)], speed=25), SLOWER), SLOWER)
+        self.assertNotEqual(helper.choose(observation([(93, 4, 30, 0)], speed=25), SLOWER), SLOWER)
         self.assertEqual(helper.mode, "override")
+
+    def test_half_second_contact_boundary_and_crossing(self):
+        for row, expected in [
+            ((112, 4, 20, 0), "manual"),    # 7 m gap / 10 m/s = 0.7 s
+            ((110, 4, 20, 0), "override"),  # exactly 0.5 s
+            ((106, 4, 30, 0), "manual"),    # close but holding distance
+            ((110, 8, 20, 0), "manual"),    # parallel lane
+            ((110, 8, 20, -4), "override"), # crossing at 0.5 s
+        ]:
+            with self.subTest(row=row):
+                helper = AssistController()
+                helper.choose(observation([row]), IDLE)
+                self.assertEqual(helper.mode, expected)
+
+    def test_manual_speed_commands_reach_the_simulator(self):
+        from assist import ASSIST_TARGET_SPEEDS
+        config = copy.deepcopy(ENV_CONFIG)
+        config["vehicles_count"] = 0
+        config["simulation_frequency"] = config["policy_frequency"] = 30
+        config["action"]["target_speeds"] = ASSIST_TARGET_SPEEDS
+        session = Session(10, config=config)
+        try:
+            helper = AssistController(policy_dt=1/30)
+            ego = session.env.unwrapped.vehicle
+            for request in (FASTER, SLOWER):
+                before = ego.speed
+                for _ in range(30):
+                    action = helper.choose(session.observation, request)
+                    session.step(action, helper.label, request)
+                self.assertEqual(helper.mode, "manual")
+                self.assertGreater((ego.speed - before) * (1 if request == FASTER else -1), 1)
+        finally:
+            session.close()
 
 
 class ScenarioTests(unittest.TestCase):

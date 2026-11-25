@@ -1,6 +1,6 @@
 """Stage 3.5 observation-only driving and transfer of control."""
 
-from reactive import (CAR_LENGTH_M, LANE_WIDTH_M, LANE_LEFT, LANE_RIGHT, FASTER,
+from reactive import (CAR_LENGTH_M, CAR_WIDTH_M, LANES, LANE_WIDTH_M, LANE_LEFT, LANE_RIGHT, FASTER,
                       SLOWER, IDLE, TARGET_SPEED_MPS, assess_lane, lane_number,
                       traffic_rows, in_lane_or_entering, danger)
 
@@ -11,6 +11,42 @@ SAFE_SECONDS_BEFORE_HANDBACK = 3.0
 LANE_CHANGE_COOLDOWN_S = 4.0
 SPEED_STEP_MPS = 2.5
 ASSIST_TARGET_SPEEDS = [i * SPEED_STEP_MPS for i in range(13)]
+OVERRIDE_HORIZON_S = 0.5
+
+
+def overlap_interval(distance, velocity, extent):
+    """Times when two car footprints overlap along one axis."""
+    if abs(velocity) < 1e-6:
+        return (0, OVERRIDE_HORIZON_S) if abs(distance) <= extent else (1, 0)
+    a = (-extent - distance) / velocity
+    b = (extent - distance) / velocity
+    return min(a, b), max(a, b)
+
+
+def projected_contact(obs, request):
+    """Earliest simultaneous longitudinal and lateral overlap within 0.5 s.
+
+    Traffic coasts at its observed velocity. For a new speed request use
+    the mean of current and attainable target speeds as a short projection.
+    A lane request projects a one-second lateral move toward its lane center.
+    """
+    _, x, y, vx, vy = map(float, obs[0])
+    if request in (FASTER, SLOWER):
+        index = round(vx / SPEED_STEP_MPS) + (1 if request == FASTER else -1)
+        target = min(TARGET_SPEED_MPS, max(0, index * SPEED_STEP_MPS))
+        vx = (vx + target) / 2
+    elif request in (LANE_LEFT, LANE_RIGHT):
+        lane = lane_number(obs) + (-1 if request == LANE_LEFT else 1)
+        if 0 <= lane < LANES:
+            vy = lane * LANE_WIDTH_M - y
+    earliest = None
+    for _, tx, ty, tvx, tvy in traffic_rows(obs):
+        x0, x1 = overlap_interval(float(tx) - x, float(tvx) - vx, CAR_LENGTH_M)
+        y0, y1 = overlap_interval(float(ty) - y, float(tvy) - vy, CAR_WIDTH_M)
+        entry = max(0.0, x0, y0)
+        if entry <= min(OVERRIDE_HORIZON_S, x1, y1):
+            earliest = entry if earliest is None else min(earliest, entry)
+    return earliest
 
 
 def stable_lane(obs, lane):
@@ -59,22 +95,17 @@ class AssistController:
         follow_gap = max(DANGER_GAP_M, speed * 1.5)
         threatened |= closing > 2 and front.front_gap < follow_gap + closing * closing / 6
         self.cooldown = max(0.0, self.cooldown - self.policy_dt)
-        unsafe = False
-        if human_action in (LANE_LEFT, LANE_RIGHT):
-            target = lane + (-1 if human_action == LANE_LEFT else 1)
-            unsafe = not centered or not assess_lane(observation, target).safe
-        elif human_action == FASTER:
-            next_closing = max(0, speed + SPEED_STEP_MPS - front.front_speed)
-            unsafe = front.front_gap < follow_gap + next_closing * next_closing / 6
-        elif human_action == SLOWER:
-            unsafe = rear_conflict(observation, lane, max(0, speed - SPEED_STEP_MPS))
+        self.contact_s = projected_contact(observation, human_action)
+        imminent = self.contact_s is not None
+        reject_request = False
 
-        if self.mode == 'manual' and self.enabled and (threatened or unsafe):
+        if self.mode == 'manual' and self.enabled and imminent:
+            reject_request = human_action != IDLE and projected_contact(observation, IDLE) is None
             self.mode = 'override'
             self.safe_seconds = 0.0
             self.takeovers += 1
         elif self.mode in ('override', 'ready'):
-            if threatened or not centered or unsafe or rear_conflict(observation, lane, speed):
+            if imminent or not centered:
                 self.mode = 'override'
                 self.safe_seconds = 0.0
             elif self.mode == 'ready' and acknowledge:
@@ -87,6 +118,8 @@ class AssistController:
         self.label = 'assist' if self.active else 'human'
         if not self.active:
             return int(human_action)
+        if reject_request:
+            return IDLE  # Continuing the current path avoids the requested conflict.
 
         # Move laterally only for an observed threat. Keep the actuator's lane
         # target throughout a maneuver and require extra room in the next lane.

@@ -401,11 +401,16 @@ python benchmark.py --stage 3.5
 In the user-run window:
 
 - LEFT/RIGHT request a lane change.
-- UP/DOWN request faster/slower speed; releasing a key retains the current target.
+- Tap Up/Down for a speed step or hold to keep adjusting. The top bar shows
+  actual and target speed in km/h. Release to maintain the target. The highway
+  fills the middle strip, with the self-driving toggle below it.
 - Click **Self-driving** at the bottom left or press **A** for voluntary self-driving.
   Click again or press A to resume manual driving. S saves a snapshot. Esc exits.
-- With the default safety assist enabled, an observed hazard or a risky arrow
-  request triggers **MANUAL OVERRIDE** and switches the toggle on. After three
+- With safety assist enabled, **MANUAL OVERRIDE** switches the toggle on only
+  when the driver’s projected path overlaps another car within **0.5 simulated
+  seconds**. The estimate uses current velocities, the arrow request, and the
+  cars’ rectangular footprints. Traffic can change direction or speed after
+  the estimate, and half a second can leave too little room to avoid impact. After three
   seconds centered in a lane with safe readings, **TAKE CONTROL** flashes orange.
   The computer keeps driving until you press a safe arrow key, which also
   performs your requested maneuver. Renewed danger cancels the handback prompt.

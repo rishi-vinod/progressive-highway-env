@@ -16,6 +16,28 @@ import pygame
 
 UI_FREQUENCY_HZ = 30
 OLD_UI_FREQUENCY_HZ = 5
+DRIVE_WINDOW = (1120, 390)
+ROAD_RECT = pygame.Rect(0, 80, DRIVE_WINDOW[0], 200)
+DRIVE_TOGGLE = pygame.Rect(20, 309, 210, 50)
+
+
+def draw_dashboard(screen, frame, session, helper, started, ended, font, small, now):
+    screen.fill((18, 24, 32))
+    screen.blit(pygame.surfarray.make_surface(frame.swapaxes(0, 1)), ROAD_RECT.topleft)
+    titles = {"manual": "YOU ARE DRIVING", "auto": "SELF-DRIVING",
+              "override": "MANUAL OVERRIDE  |  Computer driving", "ready": "Computer driving"}
+    title = "Episode ended" if ended else titles[helper.mode]
+    screen.blit(font.render(title, True, (245, 245, 245)), (20, 16))
+    hint = "Press an arrow to start" if not started else "Left / Right change lane     Hold Up / Down to adjust speed"
+    screen.blit(small.render(hint, True, (190, 205, 215)), (20, 48))
+    ego = session.env.unwrapped.vehicle  # Dashboard only.
+    speeds = f"Speed {ego.speed * 3.6:.0f} km/h     Target {ego.target_speed * 3.6:.0f} km/h"
+    screen.blit(font.render(speeds, True, (245, 245, 245)), (755, 26))
+    pygame.draw.rect(screen, (37, 99, 82) if helper.active else (58, 70, 84), DRIVE_TOGGLE, border_radius=8)
+    screen.blit(font.render(f"Self-driving   {'ON' if helper.active else 'OFF'}", True, (255, 255, 255)), (36, 325))
+    if helper.mode == "ready" and not ended and int(now * 2) % 2 == 0:
+        screen.blit(font.render("TAKE CONTROL  |  Press an arrow", True, (255, 155, 55)), (255, 325))
+    screen.blit(small.render("A  Toggle      S  Save      Esc  Exit", True, (190, 205, 215)), (840, 329))
 
 
 def parse_command(text):
@@ -62,12 +84,11 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
                      "screen_width": 900, "screen_height": 400})
     if stage == "3.5":
         settings["action"]["target_speeds"] = ASSIST_TARGET_SPEEDS.copy()
-        settings["scaling"] = 4  # Show approaching traffic across a wider stretch of road.
+        settings.update(screen_width=ROAD_RECT.width, screen_height=ROAD_RECT.height, scaling=6)
     session = Session(seed, seeded_schedule(seed) if stage == "3.5" else [],
                       render_mode="rgb_array", config=settings)
     helper = AssistController(assist_on, policy_dt=1 / UI_FREQUENCY_HZ)
     message = "You have control. Arrow keys drive." if stage == "3.5" else "Type help or a developer command."
-    toggle = pygame.Rect(20, 518, 244, 56)
     text = ""
     history = [message]
     pending_action = IDLE
@@ -77,7 +98,7 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
     saved = []
     try:
         pygame.init()
-        screen = pygame.display.set_mode((1280, 600))
+        screen = pygame.display.set_mode(DRIVE_WINDOW if stage == "3.5" else (1280, 600))
         pygame.display.set_caption(f"Progressive Highway - Stage {stage} - local only")
         font = pygame.font.Font(None, 24)
         small = pygame.font.Font(None, 20)
@@ -91,7 +112,7 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
                 if event.type == pygame.QUIT:
                     running = False
                 elif (stage == "3.5" and event.type == pygame.MOUSEBUTTONDOWN
-                      and event.button == 1 and toggle.collidepoint(event.pos)):
+                      and event.button == 1 and DRIVE_TOGGLE.collidepoint(event.pos)):
                     helper.toggle()
                     started = True
                     session.command("click:self-driving")
@@ -138,12 +159,16 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
             if running and started and not paused and not session.ended and session.step_number < display_steps and now >= next_step:
                 human_action = pending_action if stage == "3.5" else None
                 if stage == "3.5":
-                    action = helper.choose(session.observation.copy(), pending_action,
+                    if pending_action == IDLE and helper.mode == "manual":
+                        held = pygame.key.get_pressed()
+                        if held[pygame.K_UP] != held[pygame.K_DOWN]:
+                            human_action = FASTER if held[pygame.K_UP] else SLOWER
+                    action = helper.choose(session.observation.copy(), human_action,
                                            acknowledge=pending_action != IDLE)
                     label = helper.label
                 else:
                     action, label = reactive_action(session.observation.copy()), "rule"
-                info = {"mode": helper.mode} if stage == "3.5" else None
+                info = {"mode": helper.mode, "projected_contact_s": helper.contact_s} if stage == "3.5" else None
                 session.step(int(action), label, human_action, info)
                 pending_action = IDLE
                 frame = session.env.render()
@@ -151,22 +176,23 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
                 next_step = now + 1 / UI_FREQUENCY_HZ
             if paused:
                 next_step = now + 1 / UI_FREQUENCY_HZ
+            if stage == "3.5":
+                draw_dashboard(screen, frame, session, helper, started, session.ended or
+                               session.step_number >= display_steps, font, small, now)
+                pygame.display.flip()
+                clock.tick(60)
+                continue
             screen.fill((18, 24, 32))
             surface = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
             screen.blit(surface, (15, 80))
-            active = stage == "3.5" and helper.active
-            titles = {"manual": "HUMAN CONTROL", "auto": "SELF-DRIVING",
-                      "override": "MANUAL OVERRIDE  |  Computer driving",
-                      "ready": "TAKE CONTROL  |  Press an arrow key"}
-            title = titles[helper.mode] if stage == "3.5" else "DEVELOPER CONTROL PANEL"
-            screen.blit(font.render(title, True, (255, 190, 70) if active else (110, 220, 170)), (20, 20))
-            status = f"step {session.step_number} | assist {'ON' if helper.enabled else 'OFF'} | " if stage == "3.5" else f"step {session.step_number} | "
+            screen.blit(font.render("DEVELOPER CONTROL PANEL", True, (110, 220, 170)), (20, 20))
+            status = f"step {session.step_number} | "
             if not started:
                 status += "Press an arrow to start driving"
             else:
                 status += "episode ended - save or Esc" if session.ended or session.step_number >= display_steps else "paused" if paused else "running"
             screen.blit(small.render(status, True, (220, 225, 230)), (20, 50))
-            instructions = ["LEFT/RIGHT: change lane", "UP/DOWN: faster/slower", "A: toggle self-driving", "S: save scenario", "Esc: quit"] if stage == "3.5" else ["Developer commands", "brake hard", "cut-in from left/right", "save scenario", "pause / resume", "Enter submits; Esc quits"]
+            instructions = ["Developer commands", "brake hard", "cut-in from left/right", "save scenario", "pause / resume", "Enter submits; Esc quits"]
             for index, line in enumerate(instructions):
                 screen.blit(small.render(line, True, (220, 225, 230)), (940, 30 + index * 25))
             for index, line in enumerate(history[-10:]):
@@ -176,13 +202,7 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
             if stage == "4":
                 pygame.draw.rect(screen, (45, 55, 70), (930, 535, 335, 45))
                 screen.blit(small.render(text[-35:] + "_", True, (255, 255, 255)), (940, 550))
-            if stage == "3.5":
-                pygame.draw.rect(screen, (37, 99, 82) if active else (58, 70, 84), toggle, border_radius=8)
-                screen.blit(font.render(f"Self-driving   {'ON' if active else 'OFF'}", True, (255, 255, 255)), (40, 538))
-                if helper.mode == "ready" and int(now * 2) % 2 == 0:
-                    screen.blit(font.render("TAKE CONTROL", True, (255, 155, 55)), (285, 538))
-            else:
-                screen.blit(small.render("No learning in Stages 1-4. Local files only.", True, (180, 190, 200)), (20, 530))
+            screen.blit(small.render("No learning in Stages 1-4. Local files only.", True, (180, 190, 200)), (20, 530))
             pygame.display.flip()
             clock.tick(60)
     except KeyboardInterrupt:
