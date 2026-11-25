@@ -1,43 +1,115 @@
-"""Stage 3.5 hazard takeover. Rules only; the detector cannot access schedules."""
+"""Stage 3.5 observation-only driving and transfer of control."""
 
-from reactive import danger, reactive_action, assess_lane, lane_number, LANE_LEFT, LANE_RIGHT, SLOWER
+from reactive import (CAR_LENGTH_M, LANE_WIDTH_M, LANE_LEFT, LANE_RIGHT, FASTER,
+                      SLOWER, IDLE, TARGET_SPEED_MPS, assess_lane, lane_number,
+                      traffic_rows, in_lane_or_entering, danger)
 
-# All detector/handback thresholds are declared here, in metres and seconds.
 DANGER_GAP_M = 16.0
 DANGER_TTC_S = 4.0
 CUT_IN_LOOKAHEAD_S = 2.0
 SAFE_SECONDS_BEFORE_HANDBACK = 3.0
+LANE_CHANGE_COOLDOWN_S = 4.0
+SPEED_STEP_MPS = 2.5
+ASSIST_TARGET_SPEEDS = [i * SPEED_STEP_MPS for i in range(13)]
+
+
+def stable_lane(obs, lane):
+    return abs(float(obs[0, 2]) - lane * LANE_WIDTH_M) < 0.3 and abs(float(obs[0, 4])) < 0.25
+
+
+def rear_conflict(obs, lane, speed):
+    for row in traffic_rows(obs):
+        dx = float(obs[0, 1] - row[1])
+        if dx > 0 and in_lane_or_entering(row, lane):
+            closing = float(row[3]) - speed
+            if closing > 0 and dx - CAR_LENGTH_M < closing * DANGER_TTC_S:
+                return True
+    return False
 
 
 class AssistController:
     def __init__(self, enabled=True, policy_dt=1.0):
-        self.enabled = enabled
+        self.enabled = enabled  # Automatic rescue permission (--assist on/off).
         self.policy_dt = policy_dt
-        self.active = False
+        self.mode = 'manual'
         self.safe_seconds = 0.0
         self.takeovers = 0
-        self.label = "human"
+        self.cooldown = 0.0
+        self.label = 'human'
 
-    def choose(self, observation, human_action):
+    @property
+    def active(self):
+        return self.mode != 'manual'
+
+    def toggle(self):
+        # A rescue requires a fresh safe arrow request to release the wheel.
+        if self.mode in ('manual', 'auto'):
+            self.mode = 'manual' if self.mode == 'auto' else 'auto'
+
+    def choose(self, observation, human_action, *, acknowledge=False):
+        lane = lane_number(observation)
+        front = assess_lane(observation, lane)
+        speed = float(observation[0, 3])
+        centered = stable_lane(observation, lane)
         threatened = danger(observation, DANGER_GAP_M, DANGER_TTC_S, CUT_IN_LOOKAHEAD_S)
-        if not self.enabled:
-            self.active = False
+        closing = max(0.0, speed - front.front_speed)
+        # Leave time for the discrete actuator to respond to a slowing queue.
+        # Include the distance used while reducing the closing speed, plus
+        # room to follow if the leader continues braking.
+        follow_gap = max(DANGER_GAP_M, speed * 1.5)
+        threatened |= closing > 2 and front.front_gap < follow_gap + closing * closing / 6
+        self.cooldown = max(0.0, self.cooldown - self.policy_dt)
+        unsafe = False
+        if human_action in (LANE_LEFT, LANE_RIGHT):
+            target = lane + (-1 if human_action == LANE_LEFT else 1)
+            unsafe = not centered or not assess_lane(observation, target).safe
+        elif human_action == FASTER:
+            next_closing = max(0, speed + SPEED_STEP_MPS - front.front_speed)
+            unsafe = front.front_gap < follow_gap + next_closing * next_closing / 6
+        elif human_action == SLOWER:
+            unsafe = rear_conflict(observation, lane, max(0, speed - SPEED_STEP_MPS))
+
+        if self.mode == 'manual' and self.enabled and (threatened or unsafe):
+            self.mode = 'override'
             self.safe_seconds = 0.0
-        elif threatened:
-            if not self.active:
-                self.takeovers += 1
-            self.active = True
-            self.safe_seconds = 0.0
-        elif self.active:
-            self.safe_seconds += self.policy_dt
-            if self.safe_seconds >= SAFE_SECONDS_BEFORE_HANDBACK:
-                self.active = False
-        self.label = "assist" if self.active else "human"
+            self.takeovers += 1
+        elif self.mode in ('override', 'ready'):
+            if threatened or not centered or unsafe or rear_conflict(observation, lane, speed):
+                self.mode = 'override'
+                self.safe_seconds = 0.0
+            elif self.mode == 'ready' and acknowledge:
+                self.mode = 'manual'
+            else:
+                self.safe_seconds += self.policy_dt
+                if self.safe_seconds + 1e-9 >= SAFE_SECONDS_BEFORE_HANDBACK:
+                    self.mode = 'ready'
+
+        self.label = 'assist' if self.active else 'human'
         if not self.active:
             return int(human_action)
-        action = reactive_action(observation)
-        if action in (LANE_LEFT, LANE_RIGHT):
-            target = lane_number(observation) + (-1 if action == LANE_LEFT else 1)
-            if not assess_lane(observation, target).safe:
-                action = SLOWER
-        return action
+
+        # Move laterally only for an observed threat. Keep the actuator's lane
+        # target throughout a maneuver and require extra room in the next lane.
+        if threatened and centered and self.cooldown <= 0:
+            options = []
+            for offset, action in ((-1, LANE_LEFT), (1, LANE_RIGHT)):
+                other = assess_lane(observation, lane + offset)
+                if other.safe and other.front_gap > min(front.front_gap, DANGER_GAP_M) + 12:
+                    options.append((other.front_gap, action))
+            if options:
+                self.cooldown = LANE_CHANGE_COOLDOWN_S
+                return max(options)[1]
+
+        # Approach the leader's speed in small target increments. Only ask
+        # for extra clearance when bumpers are already dangerously close.
+        desired = TARGET_SPEED_MPS
+        if front.front_gap < follow_gap + (closing + SPEED_STEP_MPS) ** 2 / 6:
+            desired = min(desired, front.front_speed)
+            if front.front_gap < CAR_LENGTH_M:
+                desired = max(0, desired - (CAR_LENGTH_M - front.front_gap))
+        if speed > desired + SPEED_STEP_MPS / 2:
+            if threatened or not rear_conflict(observation, lane, speed - SPEED_STEP_MPS):
+                return SLOWER
+        if centered and speed < desired - SPEED_STEP_MPS / 2 and not threatened:
+            return FASTER
+        return IDLE

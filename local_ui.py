@@ -10,7 +10,7 @@ import time
 from driving_common import ENV_CONFIG
 from scenarios import Session
 from hazards import seeded_schedule
-from assist import AssistController
+from assist import AssistController, ASSIST_TARGET_SPEEDS
 from reactive import reactive_action, IDLE, LANE_LEFT, LANE_RIGHT, FASTER, SLOWER
 import pygame
 
@@ -60,13 +60,18 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
     settings.update({"simulation_frequency": UI_FREQUENCY_HZ,
                      "policy_frequency": UI_FREQUENCY_HZ,
                      "screen_width": 900, "screen_height": 400})
+    if stage == "3.5":
+        settings["action"]["target_speeds"] = ASSIST_TARGET_SPEEDS.copy()
+        settings["scaling"] = 4  # Show approaching traffic across a wider stretch of road.
     session = Session(seed, seeded_schedule(seed) if stage == "3.5" else [],
                       render_mode="rgb_array", config=settings)
     helper = AssistController(assist_on, policy_dt=1 / UI_FREQUENCY_HZ)
-    message = "Arrow keys drive. A toggles assist. Esc exits." if stage == "3.5" else "Type help or a developer command."
+    message = "You have control. Arrow keys drive." if stage == "3.5" else "Type help or a developer command."
+    toggle = pygame.Rect(20, 518, 244, 56)
     text = ""
     history = [message]
     pending_action = IDLE
+    started = stage != "3.5"
     paused = False
     running = True
     saved = []
@@ -85,6 +90,11 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
+                elif (stage == "3.5" and event.type == pygame.MOUSEBUTTONDOWN
+                      and event.button == 1 and toggle.collidepoint(event.pos)):
+                    helper.toggle()
+                    started = True
+                    session.command("click:self-driving")
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
@@ -92,11 +102,13 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
                         keys = {pygame.K_LEFT: LANE_LEFT, pygame.K_RIGHT: LANE_RIGHT,
                                 pygame.K_UP: FASTER, pygame.K_DOWN: SLOWER}
                         if event.key in keys:
+                            started = True
                             pending_action = keys[event.key]
                             session.command(f"key:{pygame.key.name(event.key)}")
                         elif event.key == pygame.K_a:
-                            helper.enabled = not helper.enabled
-                            session.command(f"assist {'on' if helper.enabled else 'off'}")
+                            helper.toggle()
+                            started = True
+                            session.command("key:self-driving")
                         elif event.key == pygame.K_s:
                             session.command("save scenario")
                             saved.append(session.save(extra={"takeovers": helper.takeovers}))
@@ -123,14 +135,16 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
                     elif stage == "4" and event.unicode.isprintable() and len(text) < 100:
                         text += event.unicode
             now = time.monotonic()
-            if running and not paused and not session.ended and session.step_number < display_steps and now >= next_step:
+            if running and started and not paused and not session.ended and session.step_number < display_steps and now >= next_step:
                 human_action = pending_action if stage == "3.5" else None
                 if stage == "3.5":
-                    action = helper.choose(session.observation.copy(), pending_action)
+                    action = helper.choose(session.observation.copy(), pending_action,
+                                           acknowledge=pending_action != IDLE)
                     label = helper.label
                 else:
                     action, label = reactive_action(session.observation.copy()), "rule"
-                session.step(int(action), label, human_action)
+                info = {"mode": helper.mode} if stage == "3.5" else None
+                session.step(int(action), label, human_action, info)
                 pending_action = IDLE
                 frame = session.env.render()
                 session.env.unwrapped.enable_auto_render = False
@@ -141,12 +155,18 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
             surface = pygame.surfarray.make_surface(frame.swapaxes(0, 1))
             screen.blit(surface, (15, 80))
             active = stage == "3.5" and helper.active
-            title = "ASSIST ACTIVE" if active else "HUMAN CONTROL" if stage == "3.5" else "DEVELOPER CONTROL PANEL"
+            titles = {"manual": "HUMAN CONTROL", "auto": "SELF-DRIVING",
+                      "override": "MANUAL OVERRIDE  |  Computer driving",
+                      "ready": "TAKE CONTROL  |  Press an arrow key"}
+            title = titles[helper.mode] if stage == "3.5" else "DEVELOPER CONTROL PANEL"
             screen.blit(font.render(title, True, (255, 190, 70) if active else (110, 220, 170)), (20, 20))
             status = f"step {session.step_number} | assist {'ON' if helper.enabled else 'OFF'} | " if stage == "3.5" else f"step {session.step_number} | "
-            status += "episode ended - save or Esc" if session.ended or session.step_number >= display_steps else "paused" if paused else "running"
+            if not started:
+                status += "Press an arrow to start driving"
+            else:
+                status += "episode ended - save or Esc" if session.ended or session.step_number >= display_steps else "paused" if paused else "running"
             screen.blit(small.render(status, True, (220, 225, 230)), (20, 50))
-            instructions = ["LEFT/RIGHT: change lane", "UP/DOWN: faster/slower", "A: assist ON/OFF", "S: save scenario", "Esc: quit"] if stage == "3.5" else ["Developer commands", "brake hard", "cut-in from left/right", "save scenario", "pause / resume", "Enter submits; Esc quits"]
+            instructions = ["LEFT/RIGHT: change lane", "UP/DOWN: faster/slower", "A: toggle self-driving", "S: save scenario", "Esc: quit"] if stage == "3.5" else ["Developer commands", "brake hard", "cut-in from left/right", "save scenario", "pause / resume", "Enter submits; Esc quits"]
             for index, line in enumerate(instructions):
                 screen.blit(small.render(line, True, (220, 225, 230)), (940, 30 + index * 25))
             for index, line in enumerate(history[-10:]):
@@ -156,7 +176,13 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
             if stage == "4":
                 pygame.draw.rect(screen, (45, 55, 70), (930, 535, 335, 45))
                 screen.blit(small.render(text[-35:] + "_", True, (255, 255, 255)), (940, 550))
-            screen.blit(small.render("No learning in Stages 1-4. Local files only.", True, (180, 190, 200)), (20, 530))
+            if stage == "3.5":
+                pygame.draw.rect(screen, (37, 99, 82) if active else (58, 70, 84), toggle, border_radius=8)
+                screen.blit(font.render(f"Self-driving   {'ON' if active else 'OFF'}", True, (255, 255, 255)), (40, 538))
+                if helper.mode == "ready" and int(now * 2) % 2 == 0:
+                    screen.blit(font.render("TAKE CONTROL", True, (255, 155, 55)), (285, 538))
+            else:
+                screen.blit(small.render("No learning in Stages 1-4. Local files only.", True, (180, 190, 200)), (20, 530))
             pygame.display.flip()
             clock.tick(60)
     except KeyboardInterrupt:

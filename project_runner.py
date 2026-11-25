@@ -10,7 +10,7 @@ from driving_common import (ENV_CONFIG, EVALUATION_SEEDS, positive_int, nonnegat
 from hazards import KINDS, seeded_schedule
 from scenarios import Session
 from reactive import reactive_action
-from assist import AssistController
+from assist import AssistController, ASSIST_TARGET_SPEEDS
 from evaluate import summarize
 import numpy as np
 
@@ -24,6 +24,8 @@ def run_recorded(stage, seed, *, max_steps=40, headless=True, assist_on=True, ki
     if config is None and stage in ("3.5", "4"):
         config = copy.deepcopy(ENV_CONFIG)
         config["policy_frequency"] = 5
+        if stage == "3.5":
+            config["action"]["target_speeds"] = ASSIST_TARGET_SPEEDS.copy()
     session = Session(seed, schedule, render_mode=None if headless else "human", config=config)
     helper = AssistController(assist_on, 1 / session.env.unwrapped.config["policy_frequency"])
     rng = np.random.default_rng(seed)
@@ -41,7 +43,8 @@ def run_recorded(stage, seed, *, max_steps=40, headless=True, assist_on=True, ki
             human_action = None
             if stage == "3.5":
                 human_action = int(baseline(observation))
-                action = helper.choose(observation, human_action)
+                # The benchmark driver accepts handback at the next safe decision.
+                action = helper.choose(observation, human_action, acknowledge=True)
                 label = "assist" if helper.active else "stand_in"
             else:
                 if controller is not None:

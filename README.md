@@ -5,6 +5,11 @@ A local, free, open-source driving simulation built one stage at a time on macOS
 Parts 1-2 and Stages 1-4 (including 3.5) do **not** learn. Only Stage 5 learns.
 No accounts, API keys, paid services, model downloads, or runtime network calls.
 
+**To drive in traffic**, run `python 03_5_takeover.py --seed 10` in the activated
+venv. You start at the wheel with 50 other cars. Use the arrow keys to drive or
+click **Self-driving** at the bottom left. A seeded traffic hazard appears during
+the drive.
+
 ## Overtaking reference demo (rules, no learning)
 
 This separate reference scene starts three stock IDM traffic cars ahead at
@@ -397,14 +402,22 @@ In the user-run window:
 
 - LEFT/RIGHT request a lane change.
 - UP/DOWN request faster/slower speed; releasing a key retains the current target.
-- A toggles assistance ON/OFF; S saves a scenario snapshot; Esc exits.
-- The banner reads **ASSIST ACTIVE** when the computer has control.
+- Click **Self-driving** at the bottom left or press **A** for voluntary self-driving.
+  Click again or press A to resume manual driving. S saves a snapshot. Esc exits.
+- With the default safety assist enabled, an observed hazard or a risky arrow
+  request triggers **MANUAL OVERRIDE** and switches the toggle on. After three
+  seconds centered in a lane with safe readings, **TAKE CONTROL** flashes orange.
+  The computer keeps driving until you press a safe arrow key, which also
+  performs your requested maneuver. Renewed danger cancels the handback prompt.
+  The explicit `--assist off` comparison disables automatic rescue.
 
 The keyboard mapping feeds highway-env's manual-control mode. During assistance,
 normal action control resumes and human requests cannot overwrite the rescue.
-`assist.py` detects danger from the current observation only. It calls the Stage 2
-rules, checks target-lane clearance ahead and behind, and brakes if blocked.
-Control returns after three seconds of continuously safe detector readings.
+`assist.py` uses the current observation and the Stage 2 lane-clearance checks.
+Self-driving holds its lane in ordinary traffic. For a threat it checks ahead
+and behind in adjacent lanes before moving. While following, it targets the
+leader's speed in 2.5 m/s increments. It checks closing traffic behind before
+discretionary slowing and prioritizes imminent front conflicts.
 Thresholds are named constants. No AI training occurs here, and collision
 avoidance is a goal, not a guarantee.
 
@@ -457,8 +470,8 @@ python benchmark.py --smoke-test --max-steps 5
 The full command runs seeds 0-49 for Stages 0, 1, 2, 3, 3.5 OFF/ON, and 4:
 350 episodes total. Every run uses the same three physics-tick metrics and a
 40-second horizon unless terminated by a collision. Stages 0-3 use 1 Hz policy
-decisions; interactive Stages 3.5/4 and their matching benchmarks use 5 Hz for
-keyboard/assist responsiveness. Physics remains 15 Hz throughout. OFF/ON trials
+decisions. Interactive Stages 3.5/4 run at 30 Hz. Their headless benchmarks
+use 5 Hz decisions and 15 Hz physics. OFF/ON trials
 use identical timing and seeded scenes. Do not attribute differences between
 1 Hz and 5 Hz profiles solely to the controller; all configs are saved explicitly.
 These frequencies are configuration choices, not measured latency improvements.
@@ -476,9 +489,9 @@ Measured on November 3, 2026, with the pinned environment and all 50 seeds:
 - Reactive stock traffic: 0/50 collisions; 22.804 m/s.
 - Forced hazards at 1 Hz: 9/50 collisions; 82% avoided; one secondary collision;
   22.751 m/s.
-- Takeover at 5 Hz, assist OFF: 50/50 collisions, 48 hazards triggered, 0% avoided,
+- Historical takeover results (before the speed-matching and handback update), assist OFF: 50/50 collisions, 48 hazards triggered, 0% avoided,
   16 secondary collisions; closest center distance 2.027 m; 29.262 m/s.
-- Takeover at 5 Hz, assist ON: 3/50 collisions, 50 hazards triggered, **94% avoided**,
+- Historical takeover results, assist ON: 3/50 collisions, 50 hazards triggered, **94% avoided**,
   zero secondary collisions; closest center distance 3.794 m; 22.987 m/s;
   365 takeovers across the 50 episodes.
 - Stage 4 stock traffic at 5 Hz: 0/50 collisions; 22.774 m/s.

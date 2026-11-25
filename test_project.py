@@ -52,9 +52,40 @@ class ControllerTests(unittest.TestCase):
             controller.choose(observation(), IDLE)
             self.assertTrue(controller.active)
         controller.choose(observation(), IDLE)
+        self.assertEqual(controller.mode, "ready")
+        controller.choose(observation(), FASTER, acknowledge=True)
         self.assertFalse(controller.active)
         controller.enabled = False
         self.assertEqual(controller.choose(threatened, FASTER), FASTER)
+
+    def test_unsafe_lane_request_and_acknowledged_handback(self):
+        helper = AssistController(policy_dt=1)
+        obs = observation([(98, 8, 35, 0)], speed=25)
+        self.assertEqual(helper.mode, "manual")
+        self.assertNotEqual(helper.choose(obs, LANE_RIGHT), LANE_RIGHT)
+        self.assertEqual(helper.mode, "override")
+        helper.toggle()
+        self.assertEqual(helper.mode, "override")
+        for _ in range(5):
+            helper.choose(observation(), IDLE)
+        self.assertEqual(helper.mode, "ready")
+        helper.choose(obs, LANE_RIGHT, acknowledge=True)
+        self.assertEqual(helper.mode, "override")
+        for _ in range(3):
+            helper.choose(observation(), IDLE)
+        self.assertEqual(helper.choose(observation(), LANE_LEFT, acknowledge=True), LANE_LEFT)
+        self.assertEqual(helper.mode, "manual")
+
+    def test_auto_matches_speed_and_rejects_unsafe_braking(self):
+        helper = AssistController()
+        helper.toggle()
+        obs = observation([(125, 4, 20, 0), (100, 0, 20, 0), (100, 8, 20, 0)], speed=25)
+        self.assertEqual(helper.choose(obs, IDLE), SLOWER)
+        obs[0, 3] = 20
+        self.assertEqual(helper.choose(obs, IDLE), IDLE)
+        helper.toggle()
+        self.assertNotEqual(helper.choose(observation([(90, 4, 30, 0)], speed=25), SLOWER), SLOWER)
+        self.assertEqual(helper.mode, "override")
 
 
 class ScenarioTests(unittest.TestCase):
