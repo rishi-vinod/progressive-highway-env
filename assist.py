@@ -11,7 +11,8 @@ SAFE_SECONDS_BEFORE_HANDBACK = 3.0
 LANE_CHANGE_COOLDOWN_S = 4.0
 SPEED_STEP_MPS = 2.5
 ASSIST_TARGET_SPEEDS = [i * SPEED_STEP_MPS for i in range(13)]
-OVERRIDE_HORIZON_S = 0.5
+OVERRIDE_HORIZON_S = 1.0
+STYLES = ("Calm", "Quick", "Rage")
 
 
 def overlap_interval(distance, velocity, extent):
@@ -24,7 +25,7 @@ def overlap_interval(distance, velocity, extent):
 
 
 def projected_contact(obs, request):
-    """Earliest simultaneous longitudinal and lateral overlap within 0.5 s.
+    """Earliest simultaneous longitudinal and lateral overlap within one second.
 
     Traffic coasts at its observed velocity. For a new speed request use
     the mean of current and attainable target speeds as a short projection.
@@ -63,8 +64,47 @@ def rear_conflict(obs, lane, speed):
     return False
 
 
+def merge_clear(obs, target_lane, boost_speed, delay, maneuver_age=0.0):
+    """Sweep the ego footprint between predicted positions for 2.5 seconds.
+
+    Traffic keeps its observed velocity. Allow one decision for steering
+    before a gradual speed increase. Reserve extra front/rear clearance.
+    """
+    _, x, y, speed, _ = map(float, obs[0])
+    traffic = traffic_rows(obs)
+    px = py = 0.0
+    dt = 0.125
+    def fraction(t):
+        u = min(t / 1.5, 1.0)
+        return u * u * (3 - 2 * u)
+
+    initial = fraction(maneuver_age)
+    for tick in range(1, 21):
+        t = tick * dt
+        progress = (fraction(t + maneuver_age) - initial) / max(1e-6, 1 - initial)
+        lateral = (target_lane * LANE_WIDTH_M - y) * progress
+        # Integrate a bounded 2 m/s² acceleration up to the proposed speed.
+        elapsed = max(0.0, t - delay)
+        rise = min(elapsed, max(0.0, boost_speed - speed) / 2)
+        longitudinal = speed * t + rise * (2 * elapsed - rise)
+        for _, tx, ty, tvx, tvy in traffic:
+            dx = float(tx) - x + float(tvx) * (t - dt) - px
+            dy = float(ty) - y + float(tvy) * (t - dt) - py
+            x0, x1 = overlap_interval(dx, float(tvx) - (longitudinal - px) / dt, CAR_LENGTH_M + 2)
+            y0, y1 = overlap_interval(dy, float(tvy) - (lateral - py) / dt, CAR_WIDTH_M + 0.3)
+            if max(0, x0, y0) <= min(dt, x1, y1):
+                return False
+        px, py = longitudinal, lateral
+    return True
+
+
 class AssistController:
-    def __init__(self, enabled=True, policy_dt=1.0):
+    def __init__(self, enabled=True, policy_dt=1.0, style="Calm"):
+        if style not in STYLES:
+            raise ValueError(f"Unknown driving style {style}")
+        self.style = style
+        self.merge_lane = None
+        self.merge_speed = 0.0
         self.enabled = enabled  # Automatic rescue permission (--assist on/off).
         self.policy_dt = policy_dt
         self.mode = 'manual'
@@ -117,25 +157,54 @@ class AssistController:
 
         self.label = 'assist' if self.active else 'human'
         if not self.active:
+            self.merge_lane = None
             return int(human_action)
         if reject_request:
             return IDLE  # Continuing the current path avoids the requested conflict.
 
-        # Move laterally only for an observed threat. Keep the actuator's lane
-        # target throughout a maneuver and require extra room in the next lane.
-        if threatened and centered and self.cooldown <= 0:
+        # The simulator continues steering to its lane target during subsequent
+        # speed commands. Recheck the observed corridor before each increase.
+        if self.merge_lane is not None:
+            self.merge_age += self.policy_dt
+            if centered and lane == self.merge_lane:
+                self.merge_lane = None
+            elif merge_clear(observation, self.merge_lane, self.merge_speed, 0, self.merge_age):
+                return FASTER if speed < self.merge_speed - SPEED_STEP_MPS / 2 else IDLE
+
+        speeds = [float(row[3]) for row in traffic_rows(observation)]
+        flow = sorted(speeds)[len(speeds) // 2] if speeds else 25.0
+        style = self.style if self.mode == 'auto' else 'Calm'
+        desired = min(TARGET_SPEED_MPS, flow + (0.5 if style == "Calm" else 4))
+        if style == "Rage":
+            desired = TARGET_SPEED_MPS
+        pass_range = 45 if style == "Quick" else 75
+        passing = style != "Calm" and front.front_gap < pass_range and front.front_speed < desired - 2
+        if (threatened or imminent or passing) and centered and self.cooldown <= 0 and self.merge_lane is None:
             options = []
             for offset, action in ((-1, LANE_LEFT), (1, LANE_RIGHT)):
-                other = assess_lane(observation, lane + offset)
-                if other.safe and other.front_gap > min(front.front_gap, DANGER_GAP_M) + 12:
-                    options.append((other.front_gap, action))
+                target = lane + offset
+                if not 0 <= target < LANES:
+                    continue
+                other = assess_lane(observation, target)
+                required = min(front.front_gap, DANGER_GAP_M) if threatened else front.front_gap
+                if other.front_gap <= required + 12:
+                    continue
+                # Ordinary passes use the standard headway checks. In a rescue
+                # or Rage pass also evaluate narrower moving gaps end to end.
+                if not (other.safe or imminent or style == "Rage"):
+                    continue
+                for goal in (speed, min(speed + SPEED_STEP_MPS, TARGET_SPEED_MPS)):
+                    if merge_clear(observation, target, goal, self.policy_dt):
+                        options.append((other.front_gap, action, target, goal))
+                        break
             if options:
-                self.cooldown = LANE_CHANGE_COOLDOWN_S
-                return max(options)[1]
+                _, action, self.merge_lane, self.merge_speed = max(options)
+                self.merge_age = 0.0
+                self.cooldown = 2.5 if style == "Rage" else LANE_CHANGE_COOLDOWN_S
+                return action
 
         # Approach the leader's speed in small target increments. Only ask
         # for extra clearance when bumpers are already dangerously close.
-        desired = TARGET_SPEED_MPS
         if front.front_gap < follow_gap + (closing + SPEED_STEP_MPS) ** 2 / 6:
             desired = min(desired, front.front_speed)
             if front.front_gap < CAR_LENGTH_M:

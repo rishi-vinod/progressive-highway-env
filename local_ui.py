@@ -10,7 +10,7 @@ import time
 from driving_common import ENV_CONFIG
 from scenarios import Session
 from hazards import seeded_schedule
-from assist import AssistController, ASSIST_TARGET_SPEEDS
+from assist import AssistController, ASSIST_TARGET_SPEEDS, STYLES
 from reactive import reactive_action, IDLE, LANE_LEFT, LANE_RIGHT, FASTER, SLOWER
 import pygame
 
@@ -19,6 +19,8 @@ OLD_UI_FREQUENCY_HZ = 5
 DRIVE_WINDOW = (1120, 390)
 ROAD_RECT = pygame.Rect(0, 80, DRIVE_WINDOW[0], 200)
 DRIVE_TOGGLE = pygame.Rect(20, 309, 210, 50)
+STYLE_BUTTONS = {style: pygame.Rect(260 + i * 94, 309, 88, 50)
+                 for i, style in enumerate(STYLES)}
 
 
 def draw_dashboard(screen, frame, session, helper, started, ended, font, small, now):
@@ -35,8 +37,11 @@ def draw_dashboard(screen, frame, session, helper, started, ended, font, small, 
     screen.blit(font.render(speeds, True, (245, 245, 245)), (755, 26))
     pygame.draw.rect(screen, (37, 99, 82) if helper.active else (58, 70, 84), DRIVE_TOGGLE, border_radius=8)
     screen.blit(font.render(f"Self-driving   {'ON' if helper.active else 'OFF'}", True, (255, 255, 255)), (36, 325))
+    for name, rect in STYLE_BUTTONS.items():
+        pygame.draw.rect(screen, (43, 104, 135) if name == helper.style else (45, 55, 68), rect, border_radius=7)
+        screen.blit(font.render(name, True, (255, 255, 255)), (rect.x + 14, rect.y + 15))
     if helper.mode == "ready" and not ended and int(now * 2) % 2 == 0:
-        screen.blit(font.render("TAKE CONTROL  |  Press an arrow", True, (255, 155, 55)), (255, 325))
+        screen.blit(font.render("TAKE CONTROL  |  Press an arrow", True, (255, 155, 55)), (370, 16))
     screen.blit(small.render("A  Toggle      S  Save      Esc  Exit", True, (190, 205, 215)), (840, 329))
 
 
@@ -111,11 +116,15 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     running = False
-                elif (stage == "3.5" and event.type == pygame.MOUSEBUTTONDOWN
-                      and event.button == 1 and DRIVE_TOGGLE.collidepoint(event.pos)):
-                    helper.toggle()
-                    started = True
-                    session.command("click:self-driving")
+                elif stage == "3.5" and event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    if DRIVE_TOGGLE.collidepoint(event.pos):
+                        helper.toggle()
+                        started = True
+                        session.command("click:self-driving")
+                    for name, rect in STYLE_BUTTONS.items():
+                        if rect.collidepoint(event.pos):
+                            helper.style = name
+                            session.command(f"style:{name}")
                 elif event.type == pygame.KEYDOWN:
                     if event.key == pygame.K_ESCAPE:
                         running = False
@@ -168,7 +177,8 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
                     label = helper.label
                 else:
                     action, label = reactive_action(session.observation.copy()), "rule"
-                info = {"mode": helper.mode, "projected_contact_s": helper.contact_s} if stage == "3.5" else None
+                info = {"mode": helper.mode, "selected_style": helper.style,
+                        "projected_contact_s": helper.contact_s} if stage == "3.5" else None
                 session.step(int(action), label, human_action, info)
                 pending_action = IDLE
                 frame = session.env.render()

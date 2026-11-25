@@ -87,9 +87,10 @@ class ControllerTests(unittest.TestCase):
         self.assertNotEqual(helper.choose(observation([(93, 4, 30, 0)], speed=25), SLOWER), SLOWER)
         self.assertEqual(helper.mode, "override")
 
-    def test_half_second_contact_boundary_and_crossing(self):
+    def test_one_second_contact_boundary_and_crossing(self):
         for row, expected in [
-            ((112, 4, 20, 0), "manual"),    # 7 m gap / 10 m/s = 0.7 s
+            ((116, 4, 20, 0), "manual"),    # 1.1 seconds
+            ((115, 4, 20, 0), "override"),  # exactly one second
             ((110, 4, 20, 0), "override"),  # exactly 0.5 s
             ((106, 4, 30, 0), "manual"),    # close but holding distance
             ((110, 8, 20, 0), "manual"),    # parallel lane
@@ -99,6 +100,55 @@ class ControllerTests(unittest.TestCase):
                 helper = AssistController()
                 helper.choose(observation([row]), IDLE)
                 self.assertEqual(helper.mode, expected)
+
+    def test_driving_styles_and_far_leader(self):
+        flow = observation([(250, 4, 20, 0)], speed=25)
+        def drive(style, obs):
+            helper = AssistController(style=style)
+            helper.toggle()
+            return helper.choose(obs, IDLE)
+        self.assertEqual(drive("Calm", flow), SLOWER)
+        self.assertEqual(drive("Quick", flow), IDLE)
+        self.assertEqual(drive("Rage", flow), FASTER)
+        flow[1, 1] = 150
+        self.assertIn(drive("Rage", flow), (LANE_LEFT, LANE_RIGHT))
+        self.assertNotIn(drive("Quick", flow), (LANE_LEFT, LANE_RIGHT))
+
+    def test_merge_with_acceleration_and_blocked_alternative(self):
+        obs = observation([(121, 4, 9, 0), (100, 0, 25, 0), (85, 8, 29, 0)], speed=25)
+        helper = AssistController(policy_dt=1/30)
+        self.assertEqual(helper.choose(obs, IDLE), LANE_RIGHT)
+        self.assertEqual(helper.choose(obs, IDLE), FASTER)
+        obs[3, 1] = 96  # Adjacent car is already alongside.
+        self.assertEqual(AssistController(policy_dt=1/30).choose(obs, IDLE), SLOWER)
+
+    def test_tight_escape_with_simulated_actuators(self):
+        from assist import ASSIST_TARGET_SPEEDS
+        from highway_env.vehicle.kinematics import Vehicle
+        config = copy.deepcopy(ENV_CONFIG)
+        config.update(initial_lane_id=1, vehicles_count=0, simulation_frequency=30, policy_frequency=30)
+        config["action"]["target_speeds"] = ASSIST_TARGET_SPEEDS
+        session = Session(0, config=config)
+        try:
+            base = session.env.unwrapped
+            ego = base.vehicle
+            for index, (dx, y, speed) in enumerate([(21, 4, 9), (0, 0, 25), (-15, 8, 29)]):
+                car = Vehicle(base.road, [ego.position[0] + dx, y], speed=speed)
+                car.project_id = f"traffic_{index}"
+                base.road.vehicles.append(car)
+            helper = AssistController(policy_dt=1/30)
+            session.observation = base.observation_type.observe()
+            actions = []
+            for _ in range(75):  # Cover the entire planned maneuver.
+                action = helper.choose(session.observation, IDLE)
+                actions.append(action)
+                session.step(action, helper.label)
+                self.assertFalse(session.result().collision, (actions, ego.position, ego.speed, base.road.contact_ids))
+            self.assertEqual(actions[0], LANE_RIGHT)
+            self.assertIn(FASTER, actions[1:30])
+            self.assertAlmostEqual(ego.position[1], 8, delta=0.3)
+        finally:
+            session.close()
 
     def test_manual_speed_commands_reach_the_simulator(self):
         from assist import ASSIST_TARGET_SPEEDS
