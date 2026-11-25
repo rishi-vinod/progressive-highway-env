@@ -223,10 +223,12 @@ def run_episode(
             observation, reward, terminated, truncated, info = env.step(int(action))
             steps += 1
             if verbose:
+                reason = getattr(controller, "reason", None)
                 print(
                     f"step={steps:03d} action={int(action)} ({base.action_type.actions[int(action)]}) "
                     f"reward={reward:.6f} collision={bool(info['crashed'])} "
-                    f"ego_speed={float(np.linalg.norm(observation[0, 3:5])):.3f} m/s",
+                    f"ego_speed={float(np.linalg.norm(observation[0, 3:5])):.3f} m/s"
+                    + (f" reason={reason}" if reason else ""),
                     flush=True,
                 )
             if base.done:

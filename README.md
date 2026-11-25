@@ -5,6 +5,38 @@ A local, free, open-source driving simulation built one stage at a time on macOS
 Parts 1-2 and Stages 1-4 (including 3.5) do **not** learn. Only Stage 5 learns.
 No accounts, API keys, paid services, model downloads, or runtime network calls.
 
+## Overtaking reference demo (rules, no learning)
+
+This separate reference scene starts three stock IDM traffic cars ahead at
+20 m/s. Highway-env independently controls their acceleration and lane choices.
+The ego's `OvertakingController` receives only the current unnormalized
+kinematics observation (positions and velocities); it cannot read other cars'
+planned moves, vehicle objects, or scenario setup. It changes lanes only when
+a slower observed leader is close and the target lane is clear ahead and behind.
+
+Run the window yourself:
+
+```sh
+source .venv/bin/activate
+python overtake_demo.py --seed 0
+```
+
+Expected: the ego passes all three traffic cars and prints `cars_passed: 3`
+without a collision. Add `--debug` to print each action and its reason. For a
+window-free check or the fixed 50-seed evaluation:
+
+```sh
+python overtake_demo.py --headless --seed 0
+python overtake_demo.py --evaluate --headless
+```
+
+In the 50-seed reference scene, it passed all three cars in **50/50 episodes**
+with **0 collisions**; mean speed was **29.535 m/s** and minimum center distance
+was **4.000 m**. The scene simulates and renders at 30 physics ticks per second.
+This controlled scene demonstrates purposeful passing. It is
+not a claim that all cars can be passed in the denser 50-car stock benchmark:
+safe gaps may not exist, and some traffic can match the ego's 30 m/s speed cap.
+
 ## Run the guarded learned demo
 
 To see the trained car with the new guard, run these commands from the project

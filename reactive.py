@@ -112,3 +112,78 @@ def reactive_action(obs):
 
 def create_controller(seed):
     return reactive_action
+
+
+class OvertakingController:
+    """Pass slower observed traffic when an adjacent lane is safely open.
+
+    The only input is the current kinematics observation. Memory holds this
+    controller's own last lane-change step, never another car's intended move.
+    """
+
+    PASS_LOOKAHEAD_M = 75.0
+    PASS_TTC_S = 9.0
+    PASS_ADVANTAGE_M = 20.0
+    LANE_CHANGE_COOLDOWN = 5  # Stage 2 runs at one decision per second.
+    BRAKE_TTC_S = 5.0
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.step = 0
+        self.last_lane_change = -self.LANE_CHANGE_COOLDOWN
+        self.following = False
+        self.reason = ""
+
+    def __call__(self, obs):
+        self.step += 1
+        lane = lane_number(obs)
+        speed = float(obs[0, 3])
+        current = assess_lane(obs, lane)
+        closing = max(0.0, speed - current.front_speed)
+        ttc = current.front_gap / closing if closing > 0 else float("inf")
+        changing = (abs(float(obs[0, 2]) - lane * LANE_WIDTH_M) > 0.3
+                    or abs(float(obs[0, 4])) > 0.2)
+        if changing:
+            self.reason = "finish_lane_change"
+            return SLOWER if danger(obs) else IDLE
+
+        slow_leader = (current.front_gap < float("inf")
+                       and current.front_speed < TARGET_SPEED_MPS - 2.0)
+        pass_needed = slow_leader and (current.front_gap < self.PASS_LOOKAHEAD_M
+                                       or ttc < self.PASS_TTC_S)
+        if pass_needed and self.step - self.last_lane_change >= self.LANE_CHANGE_COOLDOWN:
+            choices = []
+            for target in (lane - 1, lane + 1):
+                candidate = assess_lane(obs, target)
+                if (candidate.safe and candidate.front_gap >= current.front_gap + self.PASS_ADVANTAGE_M
+                        and candidate.front_speed >= current.front_speed + 2.0):
+                    choices.append((candidate.front_gap, candidate.front_speed, target))
+            if choices:
+                target = max(choices)[2]
+                self.last_lane_change = self.step
+                self.following = False
+                self.reason = "pass_observed_slow_leader"
+                return LANE_LEFT if target < lane else LANE_RIGHT
+
+        if current.front_gap > self.PASS_LOOKAHEAD_M + 10.0:
+            self.following = False
+        if self.following:
+            if current.front_gap < 15.0 or speed > current.front_speed + 1.0:
+                self.reason = "match_blocked_leader"
+                return SLOWER
+            self.reason = "wait_for_safe_pass_gap"
+            return IDLE
+        if danger(obs) or current.front_gap < max(18.0, 1.2 * speed) or ttc < self.BRAKE_TTC_S:
+            if current.front_gap < 15.0 or speed > current.front_speed + 1.0:
+                self.following = pass_needed
+                self.reason = "brake_for_observed_leader"
+                return SLOWER
+            self.reason = "match_observed_leader"
+            return IDLE
+        if speed < TARGET_SPEED_MPS - 0.5:
+            self.reason = "accelerate_to_cruise"
+            return FASTER
+        self.reason = "cruise"
+        return IDLE
