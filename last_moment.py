@@ -74,7 +74,7 @@ def object_risks(obs, request, config):
 
 
 class LastMomentController:
-    """Emergency authority is independent of voluntary self-driving styles."""
+    """Shared emergency physics for human driving and every autonomous style."""
 
     def init_rescue(self, config, policy_dt):
         if not math.isfinite(policy_dt) or policy_dt <= 0:
@@ -88,7 +88,7 @@ class LastMomentController:
         self.interventions = []
         self.decision_info = None
 
-    def choose_rescue(self, obs, human_action):
+    def choose_rescue(self, obs, human_action, *, autonomous=False):
         c = self.config
         now = self.time_s
         self.time_s += self.policy_dt
@@ -105,7 +105,7 @@ class LastMomentController:
         centered = (abs(float(obs[0, 2]) - lane * LANE_WIDTH_M) < c.centered_tolerance_m
                     and abs(float(obs[0, 4])) < c.lateral_speed_tolerance_mps)
         event = None
-        if self.mode == 'manual' and self.enabled and triggered:
+        if self.mode in ('manual', 'auto') and (self.enabled or autonomous) and triggered:
             self.mode = 'override'
             self.takeovers += 1
             self.safe_since = None
@@ -138,7 +138,7 @@ class LastMomentController:
                 event = 'handback_started'
 
             if self.mode == 'blending' and now - self.blend_since + 1e-9 >= c.handback_ramp_s:
-                self.mode = 'manual'
+                self.mode = 'auto' if autonomous else 'manual'
                 self.interventions[-1]['handback_time_s'] = now
                 event = 'handback_completed'
                 self.rescue_lane = None
@@ -177,6 +177,7 @@ class LastMomentController:
                                   braking_impossible=a_req > c.a_max,
                                   brake_trigger=brake_trigger, steer_trigger=steer_trigger,
                                   maneuver=maneuver, event=event,
+                                  return_control_to='autonomous' if autonomous else 'human',
                                   intervention=(dict(self.interventions[-1]) if self.interventions else None),
                                   config=asdict(c), rescue_control=control,
                                   objects=[{k: finite(v) if isinstance(v, float) else v

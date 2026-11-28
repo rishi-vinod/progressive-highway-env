@@ -28,6 +28,8 @@ def draw_dashboard(screen, frame, session, helper, started, ended, font, small, 
     screen.blit(pygame.surfarray.make_surface(frame.swapaxes(0, 1)), ROAD_RECT.topleft)
     titles = {"manual": "YOU ARE DRIVING", "auto": "SELF-DRIVING",
               "override": "EMERGENCY ASSIST", "blending": "RETURNING CONTROL"}
+    if helper.autonomous:
+        titles['blending'] = 'RESUMING SELF-DRIVING'
     title = "Episode ended" if ended else titles[helper.mode]
     screen.blit(font.render(title, True, (245, 245, 245)), (20, 16))
     hint = "Press an arrow to start" if not started else "Left / Right change lane     Hold Up / Down to adjust speed"

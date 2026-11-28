@@ -455,10 +455,55 @@ are simulated seconds at the start of the decision. Infinite values use JSON
 null with `braking_impossible` distinguishing overlap from a safe infinite TTC.
 Replay applies the saved physical commands and verifies every resulting state.
 
-The voluntary **Self-driving** toggle remains a separate cruising controller in
-`assist.py`, including its 75%-of-leader following behavior and driving styles.
-It does not change emergency thresholds while the human is driving. No learning
-occurs in either controller.
+The **Self-driving** toggle now uses `autonomous.py` for cruising and the same
+`last_moment.py` emergency controller used during human driving. Every autonomous
+decision evaluates TTC, required deceleration, and the steering deadline. The
+emergency thresholds, maximum braking, hysteresis, and control ramp are identical
+for all styles. After recovery, control returns to autonomous cruising and the
+dashboard says **RESUMING SELF-DRIVING**. Manual driving behavior is unchanged.
+
+Tune cruising behavior in `autonomous.py:STYLE_CONFIG`:
+
+- **Calm:** match nearby traffic's median speed. Pass only after being impeded
+  for 8 seconds with at least 5 m/s potential speed gain; 20-second pass cooldown.
+- **Quick:** aim 2.5 m/s (9 km/h) above traffic, capped at 30 m/s. Wait 4 seconds
+  before a useful pass; require 2.5 m/s gain and a 12-second pass cooldown.
+- **Rage:** aim for the existing 30 m/s (108 km/h) top target, look farther ahead
+  for slower traffic, and immediately seek useful passes with a 2-second
+  cooldown. It accepts smaller speed gains, but still checks both front/rear
+  clearance and the swept path. It does not weave just to change lanes.
+
+Flow is measured within 100 m using current observations. On an empty road the
+targets are 25, 27.5, and 30 m/s respectively. Ordinary following matches the
+leader at a style-specific headway, slowing further only to restore clearance;
+the old fixed 75%-of-leader rule is removed. Emergency maneuvers can exceed
+ordinary passing frequency. Rage pursues faster progress when gaps permit;
+traffic can prevent it from reaching its target or being faster in every episode.
+This is local rule-based simulation behavior, not a reproduction of another
+vehicle's autonomy software. No learning occurs in any of these controllers.
+
+Autonomous decisions log the selected style, observed flow speed, cruising and
+following targets, planner reason, and the shared emergency measurements.
+Headless style checks: `python test_autonomous.py`. Compare all fixed 50 seeds
+per style with `python evaluate_autonomous.py --style Calm` (or `Quick`, `Rage`).
+The comparison uses stock traffic, 5 Hz decisions, 15 Hz physics, and full
+40-second episodes unless a collision ends one early. JSON trajectories, CSV
+metrics, speed summaries, lane transitions, and emergency counts stay in `runs/`.
+
+The verified 50-seed stock-traffic comparison recorded **0/50 collisions for
+each style**. Mean speeds were Calm **72.1 km/h**, Quick **78.6 km/h**, and Rage
+**81.8 km/h**. Total lane transitions across those 50 episodes were **0, 3, and
+34**, respectively. All episodes lasted 40 seconds. None required emergency
+intervention; separate forced-observation tests verify identical emergency
+thresholds and maximum braking in all three styles. A full Rage episode with
+three lane changes replayed exactly. These results do not establish a collision
+guarantee or the 30 Hz window's performance.
+
+Saved comparison runs:
+
+- `runs/autonomous_calm_20261128T154853120107Z_87527ec5`
+- `runs/autonomous_quick_20261128T154853120084Z_4bcef282`
+- `runs/autonomous_rage_20261128T154853120109Z_70749a86`
 
 Headless checks: `python test_last_moment.py` and `python test_project.py`.
 

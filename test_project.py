@@ -106,23 +106,23 @@ class ControllerTests(unittest.TestCase):
                 self.assertEqual(helper.mode, expected)
 
     def test_driving_styles_and_far_leader(self):
-        flow = observation([(250, 4, 20, 0)], speed=25)
+        flow = observation([(250, 4, 20, 0), (190, 0, 20, 0)], speed=25)
         def drive(style, obs):
             helper = AssistController(style=style)
             helper.toggle()
             return helper.choose(obs, IDLE)
         self.assertEqual(drive("Calm", flow), SLOWER)
-        self.assertEqual(drive("Quick", flow), IDLE)
+        self.assertEqual(drive("Quick", flow), SLOWER)
         self.assertEqual(drive("Rage", flow), FASTER)
         flow[1, 1] = 150
-        self.assertEqual(drive("Rage", flow), SLOWER)
+        self.assertIn(drive("Rage", flow), (LANE_LEFT, LANE_RIGHT))
         self.assertNotIn(drive("Quick", flow), (LANE_LEFT, LANE_RIGHT))
 
     def test_front_braking_precedes_escape_and_merge_acceleration(self):
         obs = observation([(121, 4, 9, 0), (100, 0, 25, 0), (85, 8, 29, 0)], speed=25)
         helper = AssistController(policy_dt=1/30)
         self.assertEqual(helper.choose(obs, IDLE), SLOWER)
-        helper.merge_lane, helper.merge_speed, helper.merge_age = 2, 30, 0
+        helper.planner.merge_lane = 2
         self.assertEqual(helper.choose(obs, IDLE), SLOWER)
         obs[3, 1] = 96  # Adjacent car is already alongside.
         self.assertEqual(AssistController(policy_dt=1/30).choose(obs, IDLE), SLOWER)
