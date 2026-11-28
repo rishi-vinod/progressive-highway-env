@@ -3,13 +3,14 @@
 from reactive import (CAR_LENGTH_M, CAR_WIDTH_M, LANES, LANE_WIDTH_M, LANE_LEFT, LANE_RIGHT, FASTER,
                       SLOWER, IDLE, TARGET_SPEED_MPS, assess_lane, lane_number,
                       traffic_rows, in_lane_or_entering, danger)
+from last_moment import LastMomentController, INTERVENTION_CONFIG
 
 DANGER_GAP_M = 16.0
 DANGER_TTC_S = 4.0
 CUT_IN_LOOKAHEAD_S = 2.0
-SAFE_SECONDS_BEFORE_HANDBACK = 3.0
 LANE_CHANGE_COOLDOWN_S = 4.0
 SPEED_STEP_MPS = 2.5
+LEAD_SPEED_FRACTION = 0.75
 ASSIST_TARGET_SPEEDS = [i * SPEED_STEP_MPS for i in range(13)]
 OVERRIDE_HORIZON_S = 1.0
 STYLES = ("Calm", "Quick", "Rage")
@@ -98,13 +99,14 @@ def merge_clear(obs, target_lane, boost_speed, delay, maneuver_age=0.0):
     return True
 
 
-class AssistController:
-    def __init__(self, enabled=True, policy_dt=1.0, style="Calm"):
+class AssistController(LastMomentController):
+    def __init__(self, enabled=True, policy_dt=1.0, style="Calm", config=INTERVENTION_CONFIG):
         if style not in STYLES:
             raise ValueError(f"Unknown driving style {style}")
         self.style = style
         self.merge_lane = None
         self.merge_speed = 0.0
+        self.braking_speed = None
         self.enabled = enabled  # Automatic rescue permission (--assist on/off).
         self.policy_dt = policy_dt
         self.mode = 'manual'
@@ -112,17 +114,27 @@ class AssistController:
         self.takeovers = 0
         self.cooldown = 0.0
         self.label = 'human'
+        self.init_rescue(config, policy_dt)
 
     @property
     def active(self):
         return self.mode != 'manual'
 
     def toggle(self):
-        # A rescue requires a fresh safe arrow request to release the wheel.
+        # Emergency authority is released by the hysteresis/ramp, not a toggle.
         if self.mode in ('manual', 'auto'):
             self.mode = 'manual' if self.mode == 'auto' else 'auto'
 
     def choose(self, observation, human_action, *, acknowledge=False):
+        if self.mode != 'auto':
+            return self.choose_rescue(observation, human_action)
+        self.time_s += self.policy_dt
+        action = self._choose_auto(observation, human_action)
+        self.decision_info = {'mode': self.mode, 'selected_style': self.style,
+                              'projected_contact_s': self.contact_s}
+        return action
+
+    def _choose_auto(self, observation, human_action):
         lane = lane_number(observation)
         front = assess_lane(observation, lane)
         speed = float(observation[0, 3])
@@ -134,33 +146,28 @@ class AssistController:
         # room to follow if the leader continues braking.
         follow_gap = max(DANGER_GAP_M, speed * 1.5)
         threatened |= closing > 2 and front.front_gap < follow_gap + closing * closing / 6
+        # Start before the one-second contact window: discrete speed steps
+        # need time to remove closing speed. Keep a buffer below the leader.
+        braking_gap = follow_gap + closing * self.policy_dt + (closing + SPEED_STEP_MPS) ** 2 / 6
+        following = front.front_gap < braking_gap
+        follow_speed = max(0.0, LEAD_SPEED_FRACTION * front.front_speed)
+        brake_for_leader = following and speed > follow_speed + SPEED_STEP_MPS / 2
         self.cooldown = max(0.0, self.cooldown - self.policy_dt)
         self.contact_s = projected_contact(observation, human_action)
         imminent = self.contact_s is not None
-        reject_request = False
+        self.label = 'assist'
 
-        if self.mode == 'manual' and self.enabled and imminent:
-            reject_request = human_action != IDLE and projected_contact(observation, IDLE) is None
-            self.mode = 'override'
-            self.safe_seconds = 0.0
-            self.takeovers += 1
-        elif self.mode in ('override', 'ready'):
-            if imminent or not centered:
-                self.mode = 'override'
-                self.safe_seconds = 0.0
-            elif self.mode == 'ready' and acknowledge:
-                self.mode = 'manual'
-            else:
-                self.safe_seconds += self.policy_dt
-                if self.safe_seconds + 1e-9 >= SAFE_SECONDS_BEFORE_HANDBACK:
-                    self.mode = 'ready'
-
-        self.label = 'assist' if self.active else 'human'
-        if not self.active:
-            self.merge_lane = None
-            return int(human_action)
-        if reject_request:
-            return IDLE  # Continuing the current path avoids the requested conflict.
+        # Braking takes priority over starting an evasive lane change or
+        # accelerating through an existing merge. Steering already in progress
+        # continues under the simulator's lane controller.
+        if brake_for_leader:
+            self.braking_speed = (follow_speed if self.braking_speed is None
+                                  else min(self.braking_speed, follow_speed))
+        if self.braking_speed is not None:
+            if speed <= self.braking_speed + SPEED_STEP_MPS / 2:
+                self.braking_speed = None
+                return IDLE
+            return SLOWER
 
         # The simulator continues steering to its lane target during subsequent
         # speed commands. Recheck the observed corridor before each increase.
@@ -168,7 +175,7 @@ class AssistController:
             self.merge_age += self.policy_dt
             if centered and lane == self.merge_lane:
                 self.merge_lane = None
-            elif merge_clear(observation, self.merge_lane, self.merge_speed, 0, self.merge_age):
+            elif not following and merge_clear(observation, self.merge_lane, self.merge_speed, 0, self.merge_age):
                 return FASTER if speed < self.merge_speed - SPEED_STEP_MPS / 2 else IDLE
 
         speeds = [float(row[3]) for row in traffic_rows(observation)]
@@ -189,9 +196,9 @@ class AssistController:
                 required = min(front.front_gap, DANGER_GAP_M) if threatened else front.front_gap
                 if other.front_gap <= required + 12:
                     continue
-                # Ordinary passes use the standard headway checks. In a rescue
-                # or Rage pass also evaluate narrower moving gaps end to end.
-                if not (other.safe or imminent or style == "Rage"):
+                # All styles and rescues require front and rear headway, then
+                # a swept-footprint check along the complete proposed move.
+                if not other.safe:
                     continue
                 for goal in (speed, min(speed + SPEED_STEP_MPS, TARGET_SPEED_MPS)):
                     if merge_clear(observation, target, goal, self.policy_dt):
@@ -203,10 +210,9 @@ class AssistController:
                 self.cooldown = 2.5 if style == "Rage" else LANE_CHANGE_COOLDOWN_S
                 return action
 
-        # Approach the leader's speed in small target increments. Only ask
-        # for extra clearance when bumpers are already dangerously close.
-        if front.front_gap < follow_gap + (closing + SPEED_STEP_MPS) ** 2 / 6:
-            desired = min(desired, front.front_speed)
+        # Reopen clearance by following below the observed leader's speed.
+        if following:
+            desired = min(desired, follow_speed)
             if front.front_gap < CAR_LENGTH_M:
                 desired = max(0, desired - (CAR_LENGTH_M - front.front_gap))
         if speed > desired + SPEED_STEP_MPS / 2:

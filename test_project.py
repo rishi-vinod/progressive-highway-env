@@ -8,7 +8,7 @@ import unittest
 from driving_common import ENV_CONFIG, new_run_directory
 from reactive import (reactive_action, assess_lane, danger, LANE_LEFT, LANE_RIGHT,
                       SLOWER, IDLE, FASTER)
-from assist import AssistController, SAFE_SECONDS_BEFORE_HANDBACK
+from assist import AssistController
 from hazards import seeded_schedule
 from scenarios import Session, replay_document
 from local_ui import parse_command, execute_command
@@ -48,51 +48,55 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.choose(threatened, FASTER), SLOWER)
         self.assertTrue(controller.active)
         self.assertEqual(controller.takeovers, 1)
-        for _ in range(int(SAFE_SECONDS_BEFORE_HANDBACK) - 1):
-            controller.choose(observation(), IDLE)
-            self.assertTrue(controller.active)
         controller.choose(observation(), IDLE)
-        self.assertEqual(controller.mode, "ready")
+        self.assertEqual(controller.mode, "override")
+        controller.choose(observation(), IDLE)
+        self.assertEqual(controller.mode, "blending")
         controller.choose(observation(), FASTER, acknowledge=True)
         self.assertFalse(controller.active)
         controller.enabled = False
         self.assertEqual(controller.choose(threatened, FASTER), FASTER)
 
-    def test_unsafe_lane_request_and_acknowledged_handback(self):
+    def test_unsafe_lane_request_and_automatic_handback(self):
         helper = AssistController(policy_dt=1)
-        obs = observation([(98, 8, 35, 0)], speed=25)
+        obs = observation([(108, 8, 15, 0)], speed=25)
         self.assertEqual(helper.mode, "manual")
         self.assertNotEqual(helper.choose(obs, LANE_RIGHT), LANE_RIGHT)
         self.assertEqual(helper.mode, "override")
         helper.toggle()
         self.assertEqual(helper.mode, "override")
+        # Finish the escape in the selected left lane before returning control.
+        clear = observation()
+        clear[0, 2] = 0
         for _ in range(5):
-            helper.choose(observation(), IDLE)
-        self.assertEqual(helper.mode, "ready")
+            helper.choose(clear, IDLE)
+        self.assertEqual(helper.mode, "manual")
         helper.choose(obs, LANE_RIGHT, acknowledge=True)
         self.assertEqual(helper.mode, "override")
         for _ in range(3):
-            helper.choose(observation(), IDLE)
-        self.assertEqual(helper.choose(observation(), LANE_LEFT, acknowledge=True), LANE_LEFT)
+            helper.choose(clear, IDLE)
+        self.assertEqual(helper.choose(clear, LANE_LEFT, acknowledge=True), LANE_LEFT)
         self.assertEqual(helper.mode, "manual")
 
-    def test_auto_matches_speed_and_rejects_unsafe_braking(self):
+    def test_voluntary_auto_follows_and_manual_driver_is_trusted(self):
         helper = AssistController()
         helper.toggle()
         obs = observation([(125, 4, 20, 0), (100, 0, 20, 0), (100, 8, 20, 0)], speed=25)
         self.assertEqual(helper.choose(obs, IDLE), SLOWER)
         obs[0, 3] = 20
+        self.assertEqual(helper.choose(obs, IDLE), SLOWER)
+        obs[0, 3] = 15
         self.assertEqual(helper.choose(obs, IDLE), IDLE)
         helper.toggle()
-        self.assertNotEqual(helper.choose(observation([(93, 4, 30, 0)], speed=25), SLOWER), SLOWER)
-        self.assertEqual(helper.mode, "override")
+        self.assertEqual(helper.choose(observation([(93, 4, 30, 0)], speed=25), SLOWER), SLOWER)
+        self.assertEqual(helper.mode, "manual")
 
     def test_one_second_contact_boundary_and_crossing(self):
         for row, expected in [
-            ((116, 4, 20, 0), "manual"),    # 1.1 seconds
+            ((116, 4, 20, 0), "override"),  # Brake before one-second contact.
             ((115, 4, 20, 0), "override"),  # exactly one second
             ((110, 4, 20, 0), "override"),  # exactly 0.5 s
-            ((106, 4, 30, 0), "manual"),    # close but holding distance
+            ((106, 4, 30, 0), "manual"),    # No closing speed: trust the driver.
             ((110, 8, 20, 0), "manual"),    # parallel lane
             ((110, 8, 20, -4), "override"), # crossing at 0.5 s
         ]:
@@ -111,18 +115,19 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(drive("Quick", flow), IDLE)
         self.assertEqual(drive("Rage", flow), FASTER)
         flow[1, 1] = 150
-        self.assertIn(drive("Rage", flow), (LANE_LEFT, LANE_RIGHT))
+        self.assertEqual(drive("Rage", flow), SLOWER)
         self.assertNotIn(drive("Quick", flow), (LANE_LEFT, LANE_RIGHT))
 
-    def test_merge_with_acceleration_and_blocked_alternative(self):
+    def test_front_braking_precedes_escape_and_merge_acceleration(self):
         obs = observation([(121, 4, 9, 0), (100, 0, 25, 0), (85, 8, 29, 0)], speed=25)
         helper = AssistController(policy_dt=1/30)
-        self.assertEqual(helper.choose(obs, IDLE), LANE_RIGHT)
-        self.assertEqual(helper.choose(obs, IDLE), FASTER)
+        self.assertEqual(helper.choose(obs, IDLE), SLOWER)
+        helper.merge_lane, helper.merge_speed, helper.merge_age = 2, 30, 0
+        self.assertEqual(helper.choose(obs, IDLE), SLOWER)
         obs[3, 1] = 96  # Adjacent car is already alongside.
         self.assertEqual(AssistController(policy_dt=1/30).choose(obs, IDLE), SLOWER)
 
-    def test_tight_escape_with_simulated_actuators(self):
+    def test_distant_leader_does_not_trigger_at_high_speed(self):
         from assist import ASSIST_TARGET_SPEEDS
         from highway_env.vehicle.kinematics import Vehicle
         config = copy.deepcopy(ENV_CONFIG)
@@ -132,21 +137,25 @@ class ControllerTests(unittest.TestCase):
         try:
             base = session.env.unwrapped
             ego = base.vehicle
-            for index, (dx, y, speed) in enumerate([(21, 4, 9), (0, 0, 25), (-15, 8, 29)]):
+            ego.speed = 30  # 108 km/h: above the reported 80 km/h threshold.
+            ego.target_speed = 30
+            for index, (dx, y, speed) in enumerate([(60, 4, 20), (0, 0, 25), (-15, 8, 29)]):
                 car = Vehicle(base.road, [ego.position[0] + dx, y], speed=speed)
                 car.project_id = f"traffic_{index}"
                 base.road.vehicles.append(car)
             helper = AssistController(policy_dt=1/30)
             session.observation = base.observation_type.observe()
             actions = []
-            for _ in range(75):  # Cover the entire planned maneuver.
+            speeds = []
+            for _ in range(180):  # Allow the discrete actuator to slow down.
                 action = helper.choose(session.observation, IDLE)
                 actions.append(action)
-                session.step(action, helper.label)
+                session.step(action, helper.label, IDLE, helper.decision_info)
+                speeds.append(ego.speed)
                 self.assertFalse(session.result().collision, (actions, ego.position, ego.speed, base.road.contact_ids))
-            self.assertEqual(actions[0], LANE_RIGHT)
-            self.assertIn(FASTER, actions[1:30])
-            self.assertAlmostEqual(ego.position[1], 8, delta=0.3)
+            self.assertEqual(actions[0], IDLE)
+            self.assertTrue(helper.interventions)
+            self.assertLess(min(speeds), 30)
         finally:
             session.close()
 

@@ -27,7 +27,7 @@ def draw_dashboard(screen, frame, session, helper, started, ended, font, small, 
     screen.fill((18, 24, 32))
     screen.blit(pygame.surfarray.make_surface(frame.swapaxes(0, 1)), ROAD_RECT.topleft)
     titles = {"manual": "YOU ARE DRIVING", "auto": "SELF-DRIVING",
-              "override": "MANUAL OVERRIDE  |  Computer driving", "ready": "Computer driving"}
+              "override": "EMERGENCY ASSIST", "blending": "RETURNING CONTROL"}
     title = "Episode ended" if ended else titles[helper.mode]
     screen.blit(font.render(title, True, (245, 245, 245)), (20, 16))
     hint = "Press an arrow to start" if not started else "Left / Right change lane     Hold Up / Down to adjust speed"
@@ -40,8 +40,6 @@ def draw_dashboard(screen, frame, session, helper, started, ended, font, small, 
     for name, rect in STYLE_BUTTONS.items():
         pygame.draw.rect(screen, (43, 104, 135) if name == helper.style else (45, 55, 68), rect, border_radius=7)
         screen.blit(font.render(name, True, (255, 255, 255)), (rect.x + 14, rect.y + 15))
-    if helper.mode == "ready" and not ended and int(now * 2) % 2 == 0:
-        screen.blit(font.render("TAKE CONTROL  |  Press an arrow", True, (255, 155, 55)), (370, 16))
     screen.blit(small.render("A  Toggle      S  Save      Esc  Exit", True, (190, 205, 215)), (840, 329))
 
 
@@ -168,7 +166,7 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
             if running and started and not paused and not session.ended and session.step_number < display_steps and now >= next_step:
                 human_action = pending_action if stage == "3.5" else None
                 if stage == "3.5":
-                    if pending_action == IDLE and helper.mode == "manual":
+                    if pending_action == IDLE and helper.mode in ('manual', 'blending'):
                         held = pygame.key.get_pressed()
                         if held[pygame.K_UP] != held[pygame.K_DOWN]:
                             human_action = FASTER if held[pygame.K_UP] else SLOWER
@@ -177,8 +175,7 @@ def run_window(stage, seed=0, max_steps=200, assist_on=True):
                     label = helper.label
                 else:
                     action, label = reactive_action(session.observation.copy()), "rule"
-                info = {"mode": helper.mode, "selected_style": helper.style,
-                        "projected_contact_s": helper.contact_s} if stage == "3.5" else None
+                info = helper.decision_info if stage == "3.5" else None
                 session.step(int(action), label, human_action, info)
                 pending_action = IDLE
                 frame = session.env.render()

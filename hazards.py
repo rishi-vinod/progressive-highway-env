@@ -18,6 +18,31 @@ KINDS = ("hard_brake", "cut_in_left", "cut_in_right")
 class TrackedEgo(MDPVehicle):
     """Attribute collisions using the library's collision solver, not proximity."""
 
+    rescue_control = None
+
+    def act(self, action=None):
+        super().act(action)
+        control = self.rescue_control
+        if control is None:
+            return
+        elapsed = self.road.metrics.elapsed_s - control['start_time_s']
+        progress = np.clip(elapsed / control['duration_s'], 0, 1)
+        weight = control['weight'] + progress * (control['end_weight'] - control['weight'])
+        target = (*self.target_lane_index[:2], control['target_lane'])
+        steering = self.steering_control(target)
+        # Bicycle-model curvature: a_lat = v² sin(beta)/(L/2).
+        # This bounds the steady-turn lateral acceleration used in the trigger
+        # estimate; steering transients still make t_steer an approximation.
+        beta = np.arcsin(min(1.0, control['a_lat_max'] * self.LENGTH / 2 / max(self.speed ** 2, 1e-6)))
+        limit = min(self.MAX_STEERING_ANGLE, np.arctan(2 * np.tan(beta)))
+        steering = float(np.clip(steering, -limit, limit))
+        acceleration = max(-control['a_max'], control['acceleration'])
+        acceleration = max(acceleration, -max(0.0, self.speed) / control['physics_dt'])
+        Vehicle.act(self, {
+            'acceleration': float(weight * acceleration + (1 - weight) * self.action['acceleration']),
+            'steering': float(weight * steering + (1 - weight) * self.action['steering']),
+        })
+
     def _is_colliding(self, other, dt):
         result = super()._is_colliding(other, dt)
         if (result[0] or result[1]) and self.solid and other.solid:

@@ -45,6 +45,21 @@ def audit(directory, repair_labels=False):
                     assert bool(decision["guard_reason"]) == changed
                 assert document["extra"]["guard_interventions"] == sum(
                     step["decision_info"]["guard_intervened"] for step in document["steps"])
+            if 'interventions' in document:
+                starts = []
+                for step in document['steps']:
+                    decision = step.get('decision_info') or {}
+                    if decision.get('event') == 'intervention_started':
+                        assert decision['brake_trigger'] or decision['steer_trigger'], 'Early takeover'
+                        starts.append(decision['intervention']['id'])
+                    control = decision.get('rescue_control')
+                    if control:
+                        assert 0 <= control['end_weight'] <= control['weight'] <= 1
+                        assert -control['a_max'] <= control['acceleration'] <= 0
+                assert starts == [entry['id'] for entry in document['interventions']]
+                for entry in document['interventions']:
+                    if entry['handback_time_s'] is not None:
+                        assert entry['handback_time_s'] > entry['start_time_s']
             assert len(document["steps"]) == document["episode"]["steps"]
             assert document["env_config"]["observation"]["normalize"] is False
             assert len(document["initial_cars"]) == 51

@@ -43,8 +43,7 @@ def run_recorded(stage, seed, *, max_steps=40, headless=True, assist_on=True, ki
             human_action = None
             if stage == "3.5":
                 human_action = int(baseline(observation))
-                # The benchmark driver accepts handback at the next safe decision.
-                action = helper.choose(observation, human_action, acknowledge=True)
+                action = helper.choose(observation, human_action)
                 label = "assist" if helper.active else "stand_in"
             else:
                 if controller is not None:
@@ -56,9 +55,11 @@ def run_recorded(stage, seed, *, max_steps=40, headless=True, assist_on=True, ki
                 else:
                     action, label = reactive_action(observation), "rule"
             decision_info = getattr(controller, "decision_info", None) if controller is not None else None
+            if stage == '3.5':
+                decision_info = helper.decision_info
             session.step(int(action), label, human_action, decision_info)
             if verbose:
-                if decision_info and decision_info["guard_intervened"]:
+                if decision_info and decision_info.get("guard_intervened"):
                     print(f"GUARD ACTIVE: requested={decision_info['requested_action']} "
                           f"executed={action} reason={decision_info['guard_reason']}", flush=True)
                 print(f"step={session.step_number:03d} action={action} controller={label} "

@@ -65,13 +65,28 @@ class Session:
             raise RuntimeError("Episode already ended")
         if not self.env.action_space.contains(action):
             raise ValueError("Action must be one of the five discrete actions")
+        vehicle = self.env.unwrapped.vehicle
+        control = (decision_info or {}).get('rescue_control')
+        previous = vehicle.rescue_control
+        vehicle.rescue_control = copy.deepcopy(control)
+        executed = int(action)
+        if control is not None:
+            vehicle.rescue_control.update(
+                start_time_s=self.env.unwrapped.episode_metrics.elapsed_s,
+                physics_dt=1 / self.env.unwrapped.config['simulation_frequency'])
+            # Keep the emergency lane separate from the driver's target. Start
+            # blending from the lane/speed reached, never an old cruise target.
+            if control['blending'] and (previous is None or not previous['blending']):
+                vehicle.target_speed = vehicle.speed
+                vehicle.target_lane_index = (*vehicle.target_lane_index[:2], control['target_lane'])
+            executed = control['human_action'] if control['blending'] else 1
         # Use highway-env's manual-control support for human actions. The UI
         # translates keypresses into its discrete action interface; assist uses
         # normal env.step control so manual input cannot override the rescue.
         self.env.unwrapped.config["manual_control"] = controller == "human"
         if controller == "human":
-            self.env.unwrapped.action_type.act(int(action))
-        self.observation, reward, terminated, truncated, info = self.env.step(int(action))
+            self.env.unwrapped.action_type.act(executed)
+        self.observation, reward, terminated, truncated, info = self.env.step(executed)
         self.step_number += 1
         self.ended = bool(terminated or truncated)
         if self.ended:
@@ -106,7 +121,13 @@ class Session:
                 "collision_partners": sorted(contacts)}
 
     def document(self, extra=None):
-        return {**self.log, "hazard_schedule": copy.deepcopy(self.env.unwrapped.events),
+        interventions = {}
+        for record in self.records:
+            entry = record.get('decision_info', {}).get('intervention')
+            if entry:
+                interventions[entry['id']] = entry
+        return {**self.log, "interventions": list(interventions.values()),
+                "hazard_schedule": copy.deepcopy(self.env.unwrapped.events),
                 "episode": asdict(self.result()), "hazard_metrics": self.hazard_metrics(),
                 "extra": extra or {}}
 
@@ -160,6 +181,8 @@ def replay_document(saved):
         assert_same(asdict(session.result()), saved["episode"], "episode")
         assert_same(session.env.unwrapped.events, saved["hazard_schedule"], "hazard_schedule")
         assert_same(session.hazard_metrics(), saved["hazard_metrics"], "hazard_metrics")
+        if 'interventions' in saved:
+            assert_same(session.document()['interventions'], saved['interventions'], 'interventions')
         return session.result()
     finally:
         session.close()

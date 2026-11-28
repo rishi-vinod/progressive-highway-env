@@ -406,25 +406,70 @@ In the user-run window:
   fills the middle strip, with the self-driving toggle below it.
 - Click **Self-driving** at the bottom left or press **A** for voluntary self-driving.
   Click again or press A to resume manual driving. S saves a snapshot. Esc exits.
-- With safety assist enabled, **MANUAL OVERRIDE** switches the toggle on only
-  when the driver’s projected path overlaps another car within **0.5 simulated
-  seconds**. The estimate uses current velocities, the arrow request, and the
-  cars’ rectangular footprints. Traffic can change direction or speed after
-  the estimate, and half a second can leave too little room to avoid impact. After three
-  seconds centered in a lane with safe readings, **TAKE CONTROL** flashes orange.
-  The computer keeps driving until you press a safe arrow key, which also
-  performs your requested maneuver. Renewed danger cancels the handback prompt.
+- With safety assist enabled, **EMERGENCY ASSIST** intervenes at the configured
+  braking or steering deadline. Normal following, including a close car with
+  no closing speed, stays under human control. **RETURNING CONTROL** indicates
+  the automatic handback ramp; no acknowledgement key is required.
+  Renewed danger cancels the ramp and restores emergency authority.
   The explicit `--assist off` comparison disables automatic rescue.
 
 The keyboard mapping feeds highway-env's manual-control mode. During assistance,
 normal action control resumes and human requests cannot overwrite the rescue.
-`assist.py` uses the current observation and the Stage 2 lane-clearance checks.
-Self-driving holds its lane in ordinary traffic. For a threat it checks ahead
-and behind in adjacent lanes before moving. While following, it targets the
-leader's speed in 2.5 m/s increments. It checks closing traffic behind before
-discretionary slowing and prioritizes imminent front conflicts.
-Thresholds are named constants. No AI training occurs here, and collision
-avoidance is a goal, not a guarantee.
+`last_moment.py` contains the emergency algorithm and the single tuning block
+`InterventionConfig` / `INTERVENTION_CONFIG`. All distances and speeds use metres
+and m/s internally; the dashboard displays km/h. For each observed object ahead,
+`d` is bumper-to-bumper distance (center distance minus car length),
+`v_rel = v_ego - v_obj`, `TTC = d / v_rel`, and `a_req = v_rel² / (2d)`.
+Nonclosing traffic has infinite TTC and zero required braking. Closing traffic
+with an overlapping footprint has zero TTC and infinite required braking.
+Parallel traffic is ignored for triggering unless its observed motion or the
+driver's lane request puts it in the collision corridor.
+
+- Brake deadline: `a_req >= alpha * a_max`, with `alpha=0.9`, `a_max=8 m/s²`.
+- Steering deadline: `TTC <= sqrt(2 * dy / a_lat_max) + t_margin`, with
+  `a_lat_max=4 m/s²`, `t_margin=0.2 s`. `dy` is the lateral clearance needed
+  between the vehicle footprints, including a configurable 0.3 m buffer.
+- If braking is insufficient (`a_req > a_max`), prefer an adjacent lane with
+  observed front and rear clearance. An earlier steering deadline can also
+  initiate an escape. Otherwise apply maximum braking. Escapes also brake while
+  closing traffic remains in the collision corridor.
+- Handback requires `TTC > TTC_release=3 s`, `a_req < 0.3 * a_max`, and a
+  completed lane maneuver continuously for `safe_hold_s=0.5 s`. Acceleration
+  and steering then blend back over `handback_ramp_s=0.5 s`, including held
+  driver speed inputs. No new safe keypress is required.
+
+`TrackedEgo` applies emergency acceleration every physics tick, so braking is
+not limited to the discrete SLOWER speed increment. Its steering curvature is
+bounded using `a_lat_max`. The steering-time formula remains an approximation:
+the bicycle model has steering transients, decisions are sampled, and traffic
+can accelerate or change lanes after observation. This is a tunable late-trigger
+simulation, not a guarantee of the mathematically last avoidable instant.
+
+Every saved scenario includes an `interventions` summary with start time, TTC,
+required deceleration, chosen maneuver, and completed handback time (null if
+unfinished). Each step's `decision_info` also records all ahead-object estimates,
+trigger flags, mode transitions, config, and physical control weights.
+`ego_action` names the emergency maneuver; `rescue_control` records the physical
+override and driver input used for blending. Decision timestamps
+are simulated seconds at the start of the decision. Infinite values use JSON
+null with `braking_impossible` distinguishing overlap from a safe infinite TTC.
+Replay applies the saved physical commands and verifies every resulting state.
+
+The voluntary **Self-driving** toggle remains a separate cruising controller in
+`assist.py`, including its 75%-of-leader following behavior and driving styles.
+It does not change emergency thresholds while the human is driving. No learning
+occurs in either controller.
+
+Headless checks: `python test_last_moment.py` and `python test_project.py`.
+
+The fixed 50-seed late-trigger benchmark (5 Hz decisions, 15 Hz physics) recorded
+17/50 collisions with assist ON, 33/50 completed hazard avoidances (**66%**),
+2 secondary collisions, minimum center distance 2.748 m, and mean episode speed
+24.515 m/s. Assist OFF recorded 50/50 collisions, minimum center distance
+1.584 m, and mean speed 29.031 m/s. These results use the stand-in driver and
+do not establish the 30 Hz interactive window's avoidance rate. Outputs:
+`runs/benchmark_20261128T152919434451Z_348e81ce`; audit with
+`python verify_runs.py runs/benchmark_20261128T152919434451Z_348e81ce`.
 
 The default window lasts at most 200 decisions / 40 simulated seconds. The
 headless version uses the Stage 1 rule as a stand-in driver, and the benchmark
