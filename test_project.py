@@ -86,7 +86,8 @@ class ControllerTests(unittest.TestCase):
         obs[0, 3] = 20
         self.assertEqual(helper.choose(obs, IDLE), SLOWER)
         obs[0, 3] = 15
-        self.assertEqual(helper.choose(obs, IDLE), IDLE)
+        self.assertEqual(helper.choose(obs, IDLE), FASTER)
+        self.assertEqual(helper.decision_info['cruise_control']['target_speed_mps'], 20)
         helper.toggle()
         self.assertEqual(helper.choose(observation([(93, 4, 30, 0)], speed=25), SLOWER), SLOWER)
         self.assertEqual(helper.mode, "manual")

@@ -19,9 +19,16 @@ class TrackedEgo(MDPVehicle):
     """Attribute collisions using the library's collision solver, not proximity."""
 
     rescue_control = None
+    cruise_control = None
 
     def act(self, action=None):
         super().act(action)
+        if self.cruise_control is not None:
+            cruise = self.cruise_control
+            self.target_speed = cruise['target_speed_mps']
+            self.action['acceleration'] = float(np.clip(
+                self.speed_control(self.target_speed), -cruise['deceleration_limit'],
+                cruise['acceleration_limit']))
         control = self.rescue_control
         if control is None:
             return

@@ -66,6 +66,7 @@ class Session:
         if not self.env.action_space.contains(action):
             raise ValueError("Action must be one of the five discrete actions")
         vehicle = self.env.unwrapped.vehicle
+        vehicle.cruise_control = copy.deepcopy((decision_info or {}).get('cruise_control'))
         control = (decision_info or {}).get('rescue_control')
         previous = vehicle.rescue_control
         vehicle.rescue_control = copy.deepcopy(control)

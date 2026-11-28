@@ -32,7 +32,7 @@ class AutonomousTests(unittest.TestCase):
 
     def test_rage_passes_immediately_calm_and_quick_wait(self):
         # Slow leader and faster nearby flow; unobstructed passing corridors.
-        obs = observation([(160, 4, 15, 0), (190, 0, 25, 0), (190, 8, 25, 0)], speed=20)
+        obs = observation([(160, 4, 10, 0), (190, 0, 25, 0), (190, 8, 25, 0)], speed=20)
         for style in STYLE_CONFIG:
             helper = autonomous(style)
             first_pass = None
@@ -88,6 +88,51 @@ class AutonomousTests(unittest.TestCase):
             self.assertEqual(replay_document(saved), session.result())
         finally:
             session.close()
+
+    def test_rage_uses_space_even_when_both_leaders_have_same_speed(self):
+        obs = observation([(130, 4, 20, 0), (190, 0, 20, 0), (100, 8, 25, 0)], speed=25)
+        helper = autonomous('Rage', dt=1/30)
+        self.assertEqual(helper.choose(obs, IDLE), LANE_LEFT)
+        self.assertEqual(helper.mode, 'auto')
+
+    def test_actual_speed_and_completed_pass_at_window_frequency(self):
+        from highway_env.vehicle.kinematics import Vehicle
+        for style in STYLE_CONFIG:
+            config = copy.deepcopy(ENV_CONFIG)
+            config.update(vehicles_count=0, initial_lane_id=1, simulation_frequency=30,
+                          policy_frequency=30, duration=12)
+            session = Session(0, config=config)
+            helper = autonomous(style, dt=1/30)
+            try:
+                base = session.env.unwrapped
+                ego = base.vehicle
+                ego.speed = ego.target_speed = 20
+                flow = 24.2  # Deliberately between the old 2.5 m/s speed steps.
+                rows = [(0, 0, flow)]
+                if style == 'Rage':
+                    ego.speed = ego.target_speed = 25
+                    rows = [(35, 4, 20), (100, 0, 20), (100, 8, 20)]
+                for i, (dx, y, speed) in enumerate(rows):
+                    car = Vehicle(base.road, [ego.position[0] + dx, y], speed=speed)
+                    car.project_id = f'fixture_{i}'
+                    base.road.vehicles.append(car)
+                leader = base.road.vehicles[1]
+                session.observation = base.observation_type.observe()
+                for _ in range(300):
+                    action = helper.choose(session.observation, IDLE)
+                    session.step(action, helper.label, IDLE, helper.decision_info)
+                    self.assertFalse(session.result().collision, style)
+                if style == 'Rage':
+                    self.assertGreater(ego.position[0], leader.position[0])
+                    self.assertGreater(abs(ego.position[1] - 4), 3.5)
+                    self.assertGreater(ego.speed, 28)
+                else:
+                    target = flow + STYLE_CONFIG[style].speed_above_flow_mps
+                    self.assertAlmostEqual(ego.speed, target, delta=0.15)
+                print(f'30 Hz {style}: actual={ego.speed * 3.6:.2f} km/h '
+                      f'lane_y={ego.position[1]:.2f}', flush=True)
+            finally:
+                session.close()
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@
 
 from reactive import CAR_LENGTH_M, CAR_WIDTH_M, LANE_WIDTH_M, IDLE, traffic_rows
 from last_moment import LastMomentController, INTERVENTION_CONFIG
-from autonomous import AutonomousPlanner
+from autonomous import AutonomousPlanner, CRUISE_ACCELERATION_MPS2, STYLE_CONFIG
 
 SPEED_STEP_MPS = 2.5
 ASSIST_TARGET_SPEEDS = [i * SPEED_STEP_MPS for i in range(13)]
@@ -94,5 +94,10 @@ class AssistController(LastMomentController):
             self.planner.merge_lane = None
         self.decision_info.update(selected_style=self.style, autonomous=True,
                                   planner=dict(self.planner.info))
+        if self.mode in ('auto', 'blending'):
+            self.decision_info['cruise_control'] = dict(
+                target_speed_mps=self.planner.info['desired_speed_mps'],
+                acceleration_limit=CRUISE_ACCELERATION_MPS2,
+                deceleration_limit=STYLE_CONFIG[self.style].comfort_deceleration_mps2)
         self.label = 'assist'
         return action
